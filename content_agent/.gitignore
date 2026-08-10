@@ -20,3 +20,9 @@ wheels/
 
 # agent generated files
 output/
+
+# local SQLite persistence (checkpointer + store)
+data/
+
+# test
+test.py

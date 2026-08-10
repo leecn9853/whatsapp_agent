@@ -1,4 +1,4 @@
 .PHONY: dev
 
 dev:
-	uv run langgraph dev --no-browser --port 8100
+	uv run uvicorn src.webhook:app --host 0.0.0.0 --port 8100 --reload

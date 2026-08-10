@@ -1,17 +1,24 @@
 import os
+import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import SecretStr
 from langchain_openai import ChatOpenAI
-from langchain.agents.middleware import AgentState, ModelRequest, before_agent, dynamic_prompt, wrap_tool_call
-from langgraph.checkpoint.memory import InMemorySaver
+from langchain.agents.middleware import (
+    AgentState,
+    ContextEditingMiddleware,
+    ModelRequest,
+    SummarizationMiddleware,
+    before_agent,
+    dynamic_prompt,
+)
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.runtime import Runtime
-from langgraph.store.memory import InMemoryStore
-from langsmith import traceable
 from deepagents import create_deep_agent, FilesystemPermission
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
 from src.context import ContextSchema
+from src.stores.sqlite_store import SqliteStore
 from src.tools.save_file import save_file
 from src.tools.tavily_search import web_search
 
@@ -62,21 +69,47 @@ fs_backend = FilesystemBackend(root_dir=SRC_DIR)
 
 # /memories/ 路由到 StoreBackend，按 user_id 隔离，实现跨 thread 的用户专属记忆；
 # 其余路径（skills 等）仍走磁盘 FilesystemBackend。
+# WhatsApp 的 chat_id（如 "12345@c.us"）带句点，而 LangGraph store 的命名空间
+# 标签不允许包含句点，所以这里要替换掉，否则真实用户消息一律会报
+# InvalidNamespaceError。
 backend = CompositeBackend(
     default=fs_backend,
     routes={
-        "/memories/": StoreBackend(namespace=lambda rt: (rt.context.user_id or "debug",)),
+        "/memories/": StoreBackend(
+            namespace=lambda rt: ((rt.context.user_id or "debug").replace(".", "_"),)
+        ),
     },
 )
 
 MEMORY_PATH = "/memories/AGENTS.md"
 
-# agent 不再注册为 LangGraph 平台图（见 langgraph.json），而是由 webhook.py
-# 直接 invoke，所以持久化（跨 thread 记忆 + 对话历史）需要自己管理，不能依赖
-# 平台自动注入的 store/checkpointer。当前用内存实现，进程重启后数据会丢失；
-# 如需重启后保留，替换为基于磁盘/数据库的 Store 与 Checkpointer 实现即可。
-store = InMemoryStore()
-checkpointer = InMemorySaver()
+# agent 不注册为 LangGraph 平台图，而是由 webhook.py 直接 invoke，所以持久化
+# （跨 thread 记忆 + 对话历史）需要自己管理，不能依赖平台自动注入的
+# store/checkpointer。
+DATA_DIR = SRC_DIR.parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+# checkpointer：管每个 chat_id（= thread_id）的对话历史/运行状态（messages、
+# todos、待处理的工具调用等）。
+# - 触发/流程完全是 LangGraph 内置的，不需要也不应该自己手动调用：每次
+#   agent.invoke 开始时，自动按 thread_id 取最新一条 checkpoint 恢复状态；图的
+#   每一步（每个节点跑完）自动落盘一次；下一次同 thread_id 的请求自动接着最新
+#   状态续跑。这里只是把默认的 InMemorySaver 换成落盘的 SqliteSaver，触发方式
+#   本身没有变化。
+# - 增长问题：deepagents 的 DeepAgentState 已经给 messages 字段配了
+#   DeltaChannel（见 deepagents/graph.py），每一步存的是增量而不是全量快照
+#   （每 50 步才存一次完整快照），把 checkpoint 存储量从 O(对话轮数²) 降到了
+#   O(对话轮数)，所以换成持久化存储不会引入"越聊越大"的爆炸式增长。LangGraph
+#   新增了 BaseCheckpointSaver.prune() 用于手动裁剪旧 checkpoint，但目前装的
+#   版本里没有任何 checkpointer 实现它（包括 InMemorySaver），且其文档明确警告
+#   对使用 DeltaChannel 的图做朴素裁剪会悄悄弄断历史链、丢数据——所以这里不额外
+#   加自定义的裁剪/删除逻辑，等真的遇到数据库文件过大再处理。
+checkpointer = SqliteSaver(sqlite3.connect(str(DATA_DIR / "checkpoints.sqlite"), check_same_thread=False))
+
+# store：管 /memories/ 下按 user_id 隔离的跨对话长期记忆。官方没有现成的 SQLite
+# Store 实现（只有内存版和 Postgres 版），这里用 src/stores/sqlite_store.py 里
+# 自己写的简易版本（细节和限制见该文件的模块说明）。
+store = SqliteStore(DATA_DIR / "memory_store.sqlite")
 
 
 @before_agent
@@ -107,7 +140,27 @@ def seed_default_memory(state: AgentState, runtime: Runtime[ContextSchema]) -> N
 agent = create_deep_agent(
     model=llm,
     tools=tools,
-    middleware=[seed_default_memory, caller_prompt],
+    middleware=[
+        # 例子：控制单个 thread（chat_id）的上下文体量，避免陪聊越久单次调用
+        # token 越贵、最终超出模型上下文窗口。两个中间件管的是不同层面的膨胀，
+        # 按下面的顺序叠加：先精简工具结果，再对消息本身做摘要。
+        #
+        # 1) ContextEditingMiddleware：只清理"工具调用的返回结果"（比如
+        #    web_search 返回的长网页正文），不动对话本身。累计输入 token 超过
+        #    阈值时，把较早的工具结果替换成占位符。对应 Anthropic
+        #    clear_tool_uses 的思路，用默认配置即可。
+        ContextEditingMiddleware(),
+        # 2) SummarizationMiddleware：管对话消息本身。累计 token 数超过
+        #    trigger 阈值时，自动把较早的消息压缩成一段摘要，保留最近 keep
+        #    条原始消息，AI/Tool 消息对不会被拆散。
+        #    trigger=("tokens", 4000)：超过 4000 token 才触发，避免正常的
+        #    短对话被频繁摘要；keep=("messages", 20)：摘要后至少保留最近
+        #    20 条原始消息。这里已经有 /memories/AGENTS.md 承担"值得长期
+        #    记住的信息"，所以原始聊天记录被摘掉不会丢失真正重要的内容。
+        SummarizationMiddleware(model=llm, trigger=("tokens", 4000), keep=("messages", 30)),
+        seed_default_memory,
+        caller_prompt,
+    ],
     subagents=subagents,
     skills=["./skills/"],
     backend=backend,

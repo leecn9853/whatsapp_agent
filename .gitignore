@@ -1,6 +1,7 @@
 news_agent/
 finance_agent/
 finace_agent/
+examples/
 
 # OS
 .DS_Store
