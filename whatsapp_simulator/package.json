@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-simulator",
+  "version": "1.0.0",
+  "description": "REST + webhook wrapper around whatsapp-web.js",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "github:carlosalaniz/whatsapp-web.js#fix/lid-getchats-crash"
+  }
+}

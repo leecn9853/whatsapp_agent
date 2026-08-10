@@ -1,0 +1,7 @@
+{
+    "dependencies": ["."],
+    "http": {
+        "app": "./src/webhook.py:app"
+    },
+    "env": "./.env"
+}
