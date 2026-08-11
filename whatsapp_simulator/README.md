@@ -23,6 +23,7 @@ npm start
 | `SESSION_PATH` | `./.wwebjs_auth` | 登录会话持久化目录 |
 | `WEBHOOK_URL` | （空） | 设置后事件会 POST 到此地址 |
 | `WEBHOOK_EXCLUDE_EVENTS` | `qr` | 不推送的事件，逗号分隔 |
+| `MESSAGE_WHITELIST` | （空） | 只有这些号码/JID 发来的消息才推送 `message` 事件，逗号分隔，留空不限制 |
 | `PUPPETEER_EXECUTABLE_PATH` | （空） | 复用本机 Chrome/Chromium 路径 |
 
 ## REST 接口

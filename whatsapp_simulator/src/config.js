@@ -8,5 +8,9 @@ module.exports = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  messageWhitelist: (process.env.MESSAGE_WHITELIST ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
   puppeteerExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
 };

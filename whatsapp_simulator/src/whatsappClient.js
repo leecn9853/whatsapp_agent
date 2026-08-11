@@ -26,6 +26,16 @@ function hasExistingSession() {
   return fs.existsSync(path.join(path.resolve(config.sessionPath), 'session'));
 }
 
+function normalizeNumber(id) {
+  return (id || '').replace(/\D/g, '');
+}
+
+function isWhitelisted(message) {
+  if (config.messageWhitelist.length === 0) return true;
+  const sender = normalizeNumber(message.author || message.from);
+  return config.messageWhitelist.some((entry) => normalizeNumber(entry) === sender);
+}
+
 function buildClient() {
   return new Client({
     authStrategy: new LocalAuth({ dataPath: config.sessionPath }),
@@ -79,6 +89,12 @@ function registerEvents(c) {
   });
 
   c.on('message', (message) => {
+    if (!isWhitelisted(message)) {
+      console.debug(
+        `[whatsappClient] 发送者不在白名单，跳过推送: ${message.author || message.from}`
+      );
+      return;
+    }
     webhook.dispatch('message', {
       id: message.id?._serialized,
       from: message.from,
