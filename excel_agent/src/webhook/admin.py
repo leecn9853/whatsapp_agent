@@ -91,12 +91,12 @@ def _fetch_threads() -> list[tuple[str, int]]:
 
 @local_only
 async def admin_threads(request: Request) -> HTMLResponse | RedirectResponse:
-    chat_id = request.query_params.get("chat_id")
-    if chat_id:
-        return RedirectResponse(f"/admin/threads/{quote(chat_id, safe='')}")
+    user_id = request.query_params.get("user_id")
+    if user_id:
+        return RedirectResponse(f"/admin/threads/{quote(user_id, safe='')}")
 
     body = """<form method="get">
-        <input name="chat_id" placeholder="chat_id, e.g. 12345@c.us">
+        <input name="user_id" placeholder="user_id, e.g. 12345@c.us">
         <button type="submit">查看对话</button>
     </form>"""
 
@@ -112,18 +112,18 @@ async def admin_threads(request: Request) -> HTMLResponse | RedirectResponse:
             f"<td>{count}</td></tr>"
             for thread_id, count in rows
         )
-        body += f"<table><tr><th>chat_id</th><th>checkpoint 数</th></tr>{trs}</table>"
+        body += f"<table><tr><th>user_id</th><th>checkpoint 数</th></tr>{trs}</table>"
     return _page("Threads", body)
 
 
 @local_only
 async def admin_conversation(request: Request) -> HTMLResponse:
-    chat_id = request.path_params["chat_id"]
-    snapshot = await _runtime.agent.aget_state({"configurable": {"thread_id": chat_id}})
+    user_id = request.path_params["user_id"]
+    snapshot = await _runtime.agent.aget_state({"configurable": {"thread_id": user_id}})
     messages = snapshot.values.get("messages", [])
 
     if not messages:
-        body = f"<p>没有找到 chat_id={html.escape(chat_id)} 的对话记录。</p>"
+        body = f"<p>没有找到 user_id={html.escape(user_id)} 的对话记录。</p>"
     else:
         trs = "".join(
             f"<tr><td>{html.escape(type(msg).__name__)}</td>"
@@ -131,7 +131,7 @@ async def admin_conversation(request: Request) -> HTMLResponse:
             for msg in messages
         )
         body = f"<table><tr><th>Role</th><th>Content</th></tr>{trs}</table>"
-    return _page(f"Conversation: {chat_id}", body)
+    return _page(f"Conversation: {user_id}", body)
 
 
 def _fetch_namespaces() -> list[str]:
@@ -144,12 +144,12 @@ def _fetch_namespaces() -> list[str]:
 
 @local_only
 async def admin_users(request: Request) -> HTMLResponse | RedirectResponse:
-    chat_id = request.query_params.get("chat_id")
-    if chat_id:
-        return RedirectResponse(f"/admin/users/{quote(chat_id, safe='')}")
+    user_id = request.query_params.get("user_id")
+    if user_id:
+        return RedirectResponse(f"/admin/users/{quote(user_id, safe='')}")
 
     body = """<form method="get">
-        <input name="chat_id" placeholder="chat_id, e.g. 12345@c.us">
+        <input name="user_id" placeholder="user_id, e.g. 12345@c.us">
         <button type="submit">查看记忆</button>
     </form>"""
 
@@ -169,23 +169,23 @@ async def admin_users(request: Request) -> HTMLResponse | RedirectResponse:
 
 @local_only
 async def admin_memory(request: Request) -> HTMLResponse:
-    chat_id = request.path_params["chat_id"]
-    # chat_id 传原始值即可（比如带句点的 "12345@c.us"），这里按 src/main.py 里
+    user_id = request.path_params["user_id"]
+    # user_id 传原始值即可（比如带句点的 "12345@c.us"），这里按 src/main.py 里
     # namespace 工厂用的同一种规则（句点替换成下划线）转换后再查找；对已经是
     # 安全 namespace 值（从 /admin/users 表格点进来）的输入，.replace 是空操作。
-    namespace = (chat_id.replace(".", "_"),)
+    namespace = (user_id.replace(".", "_"),)
     item = await store.aget(namespace, MEMORY_KEY)
     if item is None:
         body = f"<p>没有找到 namespace={html.escape(str(namespace))} 对应的记忆。</p>"
     else:
         body = f"<pre>{html.escape(item.value['content'])}</pre>"
-    return _page(f"Memory: {chat_id}", body)
+    return _page(f"Memory: {user_id}", body)
 
 
 routes = [
     Route("/admin/", admin_index),
     Route("/admin/threads", admin_threads),
-    Route("/admin/threads/{chat_id}", admin_conversation),
+    Route("/admin/threads/{user_id}", admin_conversation),
     Route("/admin/users", admin_users),
-    Route("/admin/users/{chat_id}", admin_memory),
+    Route("/admin/users/{user_id}", admin_memory),
 ]

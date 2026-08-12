@@ -30,15 +30,15 @@ class RunsStore:
                 """
                 CREATE TABLE IF NOT EXISTS runs (
                     run_id     TEXT PRIMARY KEY,
-                    chat_id    TEXT NOT NULL,
+                    user_id    TEXT NOT NULL,
                     status     TEXT NOT NULL DEFAULT 'pending',
                     attempt    INTEGER NOT NULL DEFAULT 0,
                     error      TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS idx_runs_chat_id_created_at
-                    ON runs(chat_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_runs_user_id_created_at
+                    ON runs(user_id, created_at);
                 """
             )
             conn.commit()
@@ -64,15 +64,15 @@ class RunsStore:
 
     # ── 同步接口 ──────────────────────────────────────────────────────────
 
-    def create_run(self, chat_id: str) -> str:
+    def create_run(self, user_id: str) -> str:
         run_id = uuid.uuid4().hex
         now = self._now()
         conn = self._connect()
         try:
             conn.execute(
-                "INSERT INTO runs (run_id, chat_id, status, attempt, created_at, updated_at) "
+                "INSERT INTO runs (run_id, user_id, status, attempt, created_at, updated_at) "
                 "VALUES (?, ?, 'pending', 0, ?, ?)",
-                (run_id, chat_id, now, now),
+                (run_id, user_id, now, now),
             )
             conn.commit()
         finally:
@@ -113,8 +113,8 @@ class RunsStore:
 
     # ── 异步包装（和 SqliteStore.abatch 同一模式） ──────────────────────────
 
-    async def acreate_run(self, chat_id: str) -> str:
-        return await asyncio.to_thread(self.create_run, chat_id)
+    async def acreate_run(self, user_id: str) -> str:
+        return await asyncio.to_thread(self.create_run, user_id)
 
     async def amark_running(self, run_id: str) -> None:
         await asyncio.to_thread(self.mark_running, run_id)

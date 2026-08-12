@@ -75,7 +75,7 @@ fs_backend = FilesystemBackend(root_dir=SRC_DIR)
 
 # /memories/ 路由到 StoreBackend，按 user_id 隔离，实现跨 thread 的用户专属记忆；
 # 其余路径（skills 等）仍走磁盘 FilesystemBackend。
-# WhatsApp 的 chat_id（如 "12345@c.us"）带句点，而 LangGraph store 的命名空间
+# WhatsApp 的 user_id（如 "12345@c.us"）带句点，而 LangGraph store 的命名空间
 # 标签不允许包含句点，所以这里要替换掉，否则真实用户消息一律会报
 # InvalidNamespaceError。
 backend = CompositeBackend(
@@ -149,7 +149,7 @@ async def topic_gate(state: AgentState, runtime: Runtime[ContextSchema]) -> dict
     return {"jump_to": "end", "messages": [AIMessage(content=_OFF_TOPIC_REPLY)]}
 
 
-# checkpointer 管每个 chat_id（= thread_id）的对话历史/运行状态（messages、
+# checkpointer 管每个 user_id（= thread_id）的对话历史/运行状态（messages、
 # todos、待处理的工具调用等）：
 # - 触发/流程完全是 LangGraph 内置的，不需要也不应该自己手动调用：每次
 #   agent.invoke 开始时，自动按 thread_id 取最新一条 checkpoint 恢复状态；图的
@@ -189,7 +189,7 @@ def build_agent(checkpointer):
             # 这些为"正常 Excel 任务"服务的中间件跑之前就 jump_to="end"，避免它们
             # 对一条马上要被拒答的消息做无意义的加工。
             topic_gate,
-            # 例子：控制单个 thread（chat_id）的上下文体量，避免陪聊越久单次调用
+            # 例子：控制单个 thread（user_id）的上下文体量，避免陪聊越久单次调用
             # token 越贵、最终超出模型上下文窗口。两个中间件管的是不同层面的膨胀，
             # 按下面的顺序叠加：先精简工具结果，再对消息本身做摘要。
             #

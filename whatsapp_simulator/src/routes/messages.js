@@ -1,27 +1,9 @@
 const express = require('express');
 const { MessageMedia } = require('whatsapp-web.js');
 const whatsappClient = require('../whatsappClient');
+const { normalizeChatId, resolveLidToPhone } = require('../utils');
 
 const router = express.Router();
-
-function normalizeChatId(to) {
-  return to.includes('@') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
-}
-
-// @lid 是 WhatsApp 隐藏号码隐私功能下的"关联 ID"，不是可直接寻址的真实号码。
-// whatsapp-web.js 内部按 @lid 解析 chat 时经常找不到对应的 Chat/Wid，导致 sendMessage
-// 静默返回 null（表现为我们这边的 502 "recipient may not exist"）。
-// 这里在真正发送前，用官方提供的 getContactLidAndPhone 把 @lid 换成对应的真实号码
-// （@c.us），换不到时才回退用原始 id 尝试（保底行为不变）。
-async function resolveSendableId(client, chatId) {
-  if (!chatId.endsWith('@lid')) return chatId;
-  try {
-    const [{ pn } = {}] = await client.getContactLidAndPhone([chatId]);
-    return pn || chatId;
-  } catch (err) {
-    return chatId;
-  }
-}
 
 function requireReadyClient(req, res) {
   const { state } = whatsappClient.getState();
@@ -41,7 +23,7 @@ router.post('/messages', async (req, res, next) => {
     const client = requireReadyClient(req, res);
     if (!client) return;
 
-    const targetId = await resolveSendableId(client, normalizeChatId(to));
+    const targetId = await resolveLidToPhone(client, normalizeChatId(to));
     const sent = await client.sendMessage(targetId, message);
     if (!sent) {
       console.error(`[messages] sendMessage 返回空，to=${to} targetId=${targetId}`);
@@ -67,7 +49,7 @@ router.post('/messages/media', async (req, res, next) => {
       ? await MessageMedia.fromUrl(mediaUrl, { unsafeMime: true })
       : new MessageMedia(mimetype, mediaBase64, filename);
 
-    const targetId = await resolveSendableId(client, normalizeChatId(to));
+    const targetId = await resolveLidToPhone(client, normalizeChatId(to));
     const sent = await client.sendMessage(targetId, media, { caption });
     if (!sent) {
       console.error(`[messages/media] sendMessage 返回空，to=${to} targetId=${targetId} filename=${filename}`);
@@ -86,14 +68,32 @@ router.get('/chats', async (req, res, next) => {
     if (!client) return;
 
     const chats = await client.getChats();
+    const lidIds = chats.map((chat) => chat.id._serialized).filter((id) => id.endsWith('@lid'));
+
+    const phoneByLid = new Map();
+    if (lidIds.length) {
+      try {
+        const resolved = await client.getContactLidAndPhone(lidIds);
+        resolved.forEach(({ lid, pn }) => {
+          if (lid && pn) phoneByLid.set(lid, pn);
+        });
+      } catch (err) {
+        console.error('[chats] getContactLidAndPhone 解析 @lid 真实号码失败:', err);
+      }
+    }
+
     res.json(
-      chats.map((chat) => ({
-        id: chat.id._serialized,
-        name: chat.name,
-        isGroup: chat.isGroup,
-        unreadCount: chat.unreadCount,
-        timestamp: chat.timestamp,
-      }))
+      chats.map((chat) => {
+        const id = chat.id._serialized;
+        return {
+          id,
+          phone: phoneByLid.get(id) || (id.endsWith('@c.us') ? id : null),
+          name: chat.name,
+          isGroup: chat.isGroup,
+          unreadCount: chat.unreadCount,
+          timestamp: chat.timestamp,
+        };
+      })
     );
   } catch (err) {
     next(err);

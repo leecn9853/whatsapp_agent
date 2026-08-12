@@ -1,10 +1,9 @@
-const path = require('path');
-const fs = require('fs');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const config = require('./config');
 const webhook = require('./webhook');
+const { hasExistingSession, isWhitelisted, resolveLidToPhone } = require('./utils');
 
 const STATE = {
   INITIALIZING: 'INITIALIZING',
@@ -21,20 +20,7 @@ let lastQrDataUrl = null;
 let lastInfo = null;
 let consecutiveInitFailures = 0;
 let hadExistingSession = false;
-
-function hasExistingSession() {
-  return fs.existsSync(path.join(path.resolve(config.sessionPath), 'session'));
-}
-
-function normalizeNumber(id) {
-  return (id || '').replace(/\D/g, '');
-}
-
-function isWhitelisted(message) {
-  if (config.messageWhitelist.length === 0) return true;
-  const sender = normalizeNumber(message.author || message.from);
-  return config.messageWhitelist.some((entry) => normalizeNumber(entry) === sender);
-}
+let sessionStartTimestamp = 0;
 
 function buildClient() {
   return new Client({
@@ -88,16 +74,24 @@ function registerEvents(c) {
     webhook.dispatch('disconnected', { reason });
   });
 
-  c.on('message', (message) => {
-    if (!isWhitelisted(message)) {
+  c.on('message', async (message) => {
+    if (message.timestamp && message.timestamp < sessionStartTimestamp) {
       console.debug(
-        `[whatsappClient] 发送者不在白名单，跳过推送: ${message.author || message.from}`
+        `[whatsappClient] 跳过重连补发的历史消息: ${message.id?._serialized}`
       );
+      return;
+    }
+    const from = await resolveLidToPhone(c, message.from);
+    const senderId = message.author || message.from;
+    const senderPhone = senderId === message.from ? from : await resolveLidToPhone(c, senderId);
+
+    if (!isWhitelisted(senderPhone)) {
+      console.debug(`[whatsappClient] 发送者不在白名单，跳过推送: ${senderPhone}`);
       return;
     }
     webhook.dispatch('message', {
       id: message.id?._serialized,
-      from: message.from,
+      from,
       to: message.to,
       body: message.body,
       type: message.type,
@@ -119,6 +113,7 @@ const INIT_RETRY_DELAY_MS = 5000;
 
 function init() {
   hadExistingSession = hasExistingSession();
+  sessionStartTimestamp = Math.floor(Date.now() / 1000);
   client = buildClient();
   registerEvents(client);
   state = STATE.INITIALIZING;
