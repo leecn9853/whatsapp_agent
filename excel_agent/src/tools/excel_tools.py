@@ -22,7 +22,8 @@ from openpyxl.chart.series_factory import SeriesFactory as Series
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from src.tools._naming import build_stem
+from src.context import ContextSchema
+from src.tools._naming import build_stem, sanitize_user_id
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 INPUT_DIR = _PROJECT_ROOT / "input"
@@ -61,19 +62,32 @@ def _autosize(ws) -> None:
         ws.column_dimensions[get_column_letter(col[0].column)].width = max(10, length + 2)
 
 
-def _resolve_load_path(filename: str) -> Path:
-    """先找 output/（正在处理中的副本），再找 input/（原始样例）。"""
+def _user_dir(base: Path, ctx: ContextSchema | None) -> Path:
+    """WhatsApp 调用按 user_id 隔离到子目录（自动创建），避免不同用户互相看到/
+    处理到对方上传的文件；调试（直接跑 src/main.py）时返回 base 本身，行为不变，
+    仍然使用 input/gen_reports.py 生成的根目录样例文件。
+    """
+    if ctx and ctx.caller == "whatsapp" and ctx.user_id:
+        d = base / sanitize_user_id(ctx.user_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return base
+
+
+def _resolve_load_path(filename: str, ctx: ContextSchema | None) -> Path:
+    """先找 output/（正在处理中的副本），再找 input/（原始样例/用户上传的文件）。"""
     name = Path(filename).name  # 只取文件名，防止路径穿越到其他目录
-    for base in (OUTPUT_DIR, INPUT_DIR):
+    for base in (_user_dir(OUTPUT_DIR, ctx), _user_dir(INPUT_DIR, ctx)):
         candidate = base / name
         if candidate.is_file():
             return candidate
     raise ExcelToolError(f"没有找到文件 {filename!r}，请先用 list_excel_files 确认文件名。")
 
 
-def _resolve_save_path(load_path: Path, filename: str, output_filename: str | None, ctx) -> Path:
+def _resolve_save_path(load_path: Path, filename: str, output_filename: str | None, ctx: ContextSchema | None) -> Path:
     """已经在 output/ 里的直接原地覆盖；否则从 input/ 复制出一个新文件名。"""
-    if load_path.parent == OUTPUT_DIR:
+    user_output_dir = _user_dir(OUTPUT_DIR, ctx)
+    if load_path.parent == user_output_dir:
         return load_path
 
     if output_filename:
@@ -83,11 +97,29 @@ def _resolve_save_path(load_path: Path, filename: str, output_filename: str | No
         stem = build_stem(Path(filename).stem, ctx)
         suffix = Path(filename).suffix or ".xlsx"
 
-    candidate = OUTPUT_DIR / f"{stem}{suffix}"
+    candidate = user_output_dir / f"{stem}{suffix}"
     n = 1
     while candidate.exists():
-        candidate = OUTPUT_DIR / f"{stem}({n}){suffix}"
+        candidate = user_output_dir / f"{stem}({n}){suffix}"
         n += 1
+    return candidate
+
+
+def save_uploaded_file(user_id: str, filename: str, content: bytes) -> Path:
+    """把 WhatsApp 用户上传的文件存进该用户专属的 input/ 子目录。
+
+    供 src/webhook/whatsapp.py 收到 document 消息时直接调用，不作为 @tool 暴露给
+    LLM（LLM 不需要、也不应该自己决定往磁盘写用户上传的原始文件）。
+    """
+    target_dir = _user_dir(INPUT_DIR, ContextSchema(caller="whatsapp", user_id=user_id))
+    name = Path(filename).name  # 防路径穿越
+    stem, suffix = Path(name).stem, Path(name).suffix
+    candidate = target_dir / name
+    n = 1
+    while candidate.exists():
+        candidate = target_dir / f"{stem}({n}){suffix}"
+        n += 1
+    candidate.write_bytes(content)
     return candidate
 
 
@@ -100,13 +132,16 @@ def _list_sheets(path: Path) -> list[str]:
 
 
 @tool
-def list_excel_files() -> str:
+def list_excel_files(runtime: ToolRuntime) -> str:
     """列出 input/ 和 output/ 目录下所有可处理的 Excel 文件（.xlsx）及其 sheet 名称。
 
     动手处理某个文件前，如果不确定确切文件名/sheet 名，先调用这个工具确认。
     """
     lines = []
-    for label, base in (("input", INPUT_DIR), ("output", OUTPUT_DIR)):
+    for label, base in (
+        ("input", _user_dir(INPUT_DIR, runtime.context)),
+        ("output", _user_dir(OUTPUT_DIR, runtime.context)),
+    ):
         files = sorted(base.glob("*.xlsx"))
         if not files:
             lines.append(f"[{label}] （空）")
@@ -121,7 +156,7 @@ def list_excel_files() -> str:
 
 
 @tool
-def inspect_excel(filename: str, sheet_name: str | None = None) -> str:
+def inspect_excel(filename: str, runtime: ToolRuntime, sheet_name: str | None = None) -> str:
     """查看某个 Excel 文件的结构：每个 sheet 的尺寸、表头、前几行数据预览。
 
     filename 只写文件名（不带目录），会自动先在 output/ 里找正在处理的副本，
@@ -130,7 +165,7 @@ def inspect_excel(filename: str, sheet_name: str | None = None) -> str:
     做任何聚合/画图之前，建议先用这个工具看清楚表头和数据形态。
     """
     try:
-        path = _resolve_load_path(filename)
+        path = _resolve_load_path(filename, runtime.context)
     except ExcelToolError as e:
         return str(e)
 
@@ -160,7 +195,7 @@ def inspect_excel(filename: str, sheet_name: str | None = None) -> str:
         wb.close()
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def aggregate_excel_sheet(
     filename: str,
     sheet_name: str,
@@ -169,7 +204,7 @@ def aggregate_excel_sheet(
     new_sheet_name: str,
     runtime: ToolRuntime,
     output_filename: str | None = None,
-) -> str:
+) -> tuple[str, str | None]:
     """按列分组聚合某个 sheet 的数据，把聚合结果写成同一个工作簿里的新 sheet。
 
     数据粒度很细（比如"月份 x 产品线 x 地区"逐行）时，直接对原始行画图会很难看，
@@ -183,23 +218,23 @@ def aggregate_excel_sheet(
     返回：实际写入的文件名，以及聚合结果的预览。
     """
     try:
-        load_path = _resolve_load_path(filename)
+        load_path = _resolve_load_path(filename, runtime.context)
     except ExcelToolError as e:
-        return str(e)
+        return str(e), None
 
     try:
         df = pd.read_excel(load_path, sheet_name=sheet_name)
     except Exception as e:
-        return f"读取 sheet {sheet_name!r} 失败：{e}"
+        return f"读取 sheet {sheet_name!r} 失败：{e}", None
 
     missing = [c for c in [*group_by, *aggregations] if c not in df.columns]
     if missing:
-        return f"列名不存在：{missing}；该 sheet 的列有：{list(df.columns)}"
+        return f"列名不存在：{missing}；该 sheet 的列有：{list(df.columns)}", None
 
     try:
         grouped = df.groupby(group_by, as_index=False).agg(aggregations)
     except Exception as e:
-        return f"聚合失败：{e}"
+        return f"聚合失败：{e}", None
 
     wb = openpyxl.load_workbook(load_path)
     if new_sheet_name in wb.sheetnames:
@@ -215,14 +250,14 @@ def aggregate_excel_sheet(
     wb.save(save_path)
 
     preview = grouped.head(10).to_string(index=False)
-    return (
-        f"{save_path}\n"
+    content = (
         f"已生成汇总 sheet「{new_sheet_name}」，写入文件：{save_path.name}\n\n"
         f"聚合结果预览：\n{preview}"
     )
+    return content, str(save_path)
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def create_chart_sheet(
     filename: str,
     sheet_name: str,
@@ -233,7 +268,7 @@ def create_chart_sheet(
     runtime: ToolRuntime,
     new_sheet_name: str = "图表",
     output_filename: str | None = None,
-) -> str:
+) -> tuple[str, str | None]:
     """在 Excel 文件里新建一个 sheet，基于某个已有 sheet 的数据插入原生 Excel 图表。
 
     图表是真正的 Excel 图表对象（不是图片），用户在 Excel/WPS 打开后仍可编辑、跟数据联动。
@@ -249,24 +284,24 @@ def create_chart_sheet(
     返回：实际写入的文件名。
     """
     if chart_type == "pie" and len(value_columns) != 1:
-        return "pie（饼图）只支持一个 value_column，Excel 饼图语义上不能画多个数值系列。"
+        return "pie（饼图）只支持一个 value_column，Excel 饼图语义上不能画多个数值系列。", None
 
     try:
-        load_path = _resolve_load_path(filename)
+        load_path = _resolve_load_path(filename, runtime.context)
     except ExcelToolError as e:
-        return str(e)
+        return str(e), None
 
     wb = openpyxl.load_workbook(load_path)
     if sheet_name not in wb.sheetnames:
-        return f"sheet {sheet_name!r} 不存在，该文件的 sheet 有：{wb.sheetnames}"
+        return f"sheet {sheet_name!r} 不存在，该文件的 sheet 有：{wb.sheetnames}", None
     data_ws = wb[sheet_name]
 
     header = [c.value for c in next(data_ws.iter_rows(min_row=1, max_row=1))]
     if category_column not in header:
-        return f"列名 {category_column!r} 不存在，该 sheet 的列有：{header}"
+        return f"列名 {category_column!r} 不存在，该 sheet 的列有：{header}", None
     missing_values = [c for c in value_columns if c not in header]
     if missing_values:
-        return f"列名不存在：{missing_values}；该 sheet 的列有：{header}"
+        return f"列名不存在：{missing_values}；该 sheet 的列有：{header}", None
 
     max_row = data_ws.max_row
     cat_col_idx = header.index(category_column) + 1
@@ -304,4 +339,5 @@ def create_chart_sheet(
 
     save_path = _resolve_save_path(load_path, filename, output_filename, runtime.context)
     wb.save(save_path)
-    return f"{save_path}\n已在「{new_sheet_name}」sheet 里插入 {chart_type} 图表，写入文件：{save_path.name}"
+    content = f"已在「{new_sheet_name}」sheet 里插入 {chart_type} 图表，写入文件：{save_path.name}"
+    return content, str(save_path)

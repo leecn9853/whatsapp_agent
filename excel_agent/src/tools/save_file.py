@@ -11,15 +11,15 @@ OUT_DIR = Path(__file__).resolve().parent.parent.parent / "output"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-@tool
-def save_file(filename: str, content: str, runtime: ToolRuntime) -> str:
+@tool(response_format="content_and_artifact")
+def save_file(filename: str, content: str, runtime: ToolRuntime) -> tuple[str, str]:
     """将内容保存为本地文件，统一写入 output 目录。
 
     仅当用户明确要求生成/保存/导出文件时才调用。文件名会自动加上时间戳、
     随机数（调试时还会加 DEBUG 标记，WhatsApp 用户请求时会加上用户 ID），
     因此不会出现重名覆盖问题，也无需自己处理路径。
     输入 filename 为文件标题（可带扩展名，不需要包含目录），content 为要写入的文本内容。
-    返回实际保存的文件路径。
+    返回实际保存的文件名。
     """
     title_stem = Path(filename).stem
     suffix = Path(filename).suffix
@@ -34,4 +34,4 @@ def save_file(filename: str, content: str, runtime: ToolRuntime) -> str:
         n += 1
 
     candidate.write_text(content, encoding="utf-8")
-    return str(candidate)
+    return f"已保存文件：{candidate.name}", str(candidate)

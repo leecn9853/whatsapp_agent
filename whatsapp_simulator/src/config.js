@@ -13,4 +13,5 @@ module.exports = {
     .map((s) => s.trim())
     .filter(Boolean),
   puppeteerExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+  maxMediaSizeMB: Number(process.env.MAX_MEDIA_SIZE_MB) || 20,
 };

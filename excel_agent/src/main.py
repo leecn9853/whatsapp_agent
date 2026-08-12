@@ -1,4 +1,5 @@
 import os
+import warnings
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import SecretStr
@@ -28,6 +29,10 @@ from src.tools.excel_tools import (
 from src.tools.save_file import save_file
 from src.tools.tavily_search import web_search
 
+# LangGraph 在把我们传入的 context=ContextSchema(...) 序列化进 checkpoint/tracing
+# 时会触发这条警告，纯粹是噪音——不影响 context 实际的传递和使用，只是刷屏。
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
+
 # 在初始化任何 LangChain / DeepAgents 实例之前，先加载 .env 环境变量
 load_dotenv()
 
@@ -44,7 +49,14 @@ llm = ChatOpenAI(
 )
 
 # 工具列表
-tools = [web_search, save_file, list_excel_files, inspect_excel, aggregate_excel_sheet, create_chart_sheet]
+tools = [
+    web_search,
+    save_file,
+    list_excel_files,
+    inspect_excel,
+    aggregate_excel_sheet,
+    create_chart_sheet,
+]
 
 # 中间件：拦截并记录每一次工具调用（横切关注点示例）
 call_count = [0]
@@ -102,7 +114,9 @@ store = SqliteStore(DATA_DIR / "memory_store.sqlite")
 
 
 @before_agent
-def seed_default_memory(state: AgentState, runtime: Runtime[ContextSchema]) -> None:  # noqa: ARG001
+def seed_default_memory(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> None:  # noqa: ARG001
     """新用户第一次对话、还没有专属记忆时，把磁盘上的默认模板写入其记忆。
 
     之后完全由 Agent 通过 edit_file 自行维护，这里只负责起点。
@@ -127,7 +141,9 @@ _TOPIC_GATE_SYSTEM_PROMPT = (
 
 
 @before_model(can_jump_to=["end"])
-async def topic_gate(state: AgentState, runtime: Runtime[ContextSchema]) -> dict | None:  # noqa: ARG001
+async def topic_gate(
+    state: AgentState, runtime: Runtime[ContextSchema]
+) -> dict | None:  # noqa: ARG001
     """在主模型（带 web_search/task 等工具）被调用前，先做一次不绑工具的范围判断。
 
     system_prompt 里"只处理 Excel 任务"这条规则单靠主模型自觉并不可靠——deepseek-v4-flash
@@ -142,7 +158,9 @@ async def topic_gate(state: AgentState, runtime: Runtime[ContextSchema]) -> dict
     if not messages or not isinstance(messages[-1], HumanMessage):
         return None
 
-    reply = await llm.ainvoke([SystemMessage(content=_TOPIC_GATE_SYSTEM_PROMPT), *messages])
+    reply = await llm.ainvoke(
+        [SystemMessage(content=_TOPIC_GATE_SYSTEM_PROMPT), *messages]
+    )
     on_topic = str(reply.content).strip().lower().startswith("y")
     if on_topic:
         return None
@@ -205,7 +223,9 @@ def build_agent(checkpointer):
             #    短对话被频繁摘要；keep=("messages", 20)：摘要后至少保留最近
             #    20 条原始消息。这里已经有 /memories/AGENTS.md 承担"值得长期
             #    记住的信息"，所以原始聊天记录被摘掉不会丢失真正重要的内容。
-            SummarizationMiddleware(model=llm, trigger=("tokens", 4000), keep=("messages", 30)),
+            SummarizationMiddleware(
+                model=llm, trigger=("tokens", 4000), keep=("messages", 30)
+            ),
             seed_default_memory,
             caller_prompt,
         ],
@@ -219,7 +239,9 @@ def build_agent(checkpointer):
         permissions=[
             # /memories/ 需要保留写权限，否则 memory 中间件的 edit_file 会被下面的
             # 全局 deny 规则拦住，规则按声明顺序匹配，第一条命中的生效。
-            FilesystemPermission(operations=["write"], paths=["/memories/**"], mode="allow"),
+            FilesystemPermission(
+                operations=["write"], paths=["/memories/**"], mode="allow"
+            ),
             FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
         ],
         system_prompt="""你是一个通过 WhatsApp 与用户对话的 Excel 数据处理与图表助手，

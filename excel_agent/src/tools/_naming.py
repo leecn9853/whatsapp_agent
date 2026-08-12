@@ -17,6 +17,11 @@ def sanitize(text: str, max_len: int = 50) -> str:
     return safe[:max_len] or "untitled"
 
 
+def sanitize_user_id(user_id: str) -> str:
+    """把 WhatsApp user_id（如 "12345@c.us"）转成安全的文件名/目录名片段。"""
+    return sanitize(str(user_id).split("@")[0])
+
+
 def build_stem(title_stem: str, ctx: ContextSchema | None) -> str:
     """按调用来源拼出文件名主体（不含扩展名）。
 
@@ -33,7 +38,6 @@ def build_stem(title_stem: str, ctx: ContextSchema | None) -> str:
     safe_title = sanitize(title_stem)
 
     if caller == "whatsapp" and user_id:
-        safe_user_id = sanitize(str(user_id).split("@")[0])
-        return f"{safe_title}_{timestamp}_{safe_user_id}_{random_suffix}"
+        return f"{safe_title}_{timestamp}_{sanitize_user_id(user_id)}_{random_suffix}"
 
     return f"DEBUG_{safe_title}_{timestamp}_{random_suffix}"

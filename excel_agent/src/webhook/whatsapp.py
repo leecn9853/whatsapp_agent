@@ -17,28 +17,34 @@ from starlette.routing import Route
 from src.context import ContextSchema
 from src.main import DATA_DIR
 from src.stores.runs_store import RunsStore
-from src.tools.excel_tools import OUTPUT_FILE_TOOL_NAMES
+from src.tools.excel_tools import OUTPUT_FILE_TOOL_NAMES, save_uploaded_file
 from src.webhook import _runtime
 
 logger = logging.getLogger(__name__)
 
 WHATSAPP_SIMULATOR_URL = os.getenv("WHATSAPP_SIMULATOR_URL", "http://localhost:3000")
 
+# 目前只接收 Excel 文件；document 类型消息的后缀不在这个集合里就直接告知用户不支持，
+# 不创建 run、不调用 agent。
+ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+UNSUPPORTED_FORMAT_MESSAGE = "目前只支持 Excel 文件（.xlsx / .xls），暂不支持这个格式，请重新发送 Excel 文件。"
+MEDIA_ERROR_MESSAGE = "刚才那个文件没有接收成功（可能太大或下载失败），请重新发送一次。"
+
 # 单次 attempt 的超时窗口：从本次 attempt 的续跑点开始，跑完这次「剩余的所有
-# 步骤」（可能是好几个节点）算作一次 attempt，不是单个节点的超时。超时后
-# asyncio.wait_for 会取消 agent.astream，已经提交的节点不受影响，下一次 attempt
+# 步骤」（可能是好几个节点）算作一次 attempt，不是单个节点的超时。
+# 超时后 asyncio.wait_for 会取消 agent.astream，已经提交的节点不受影响，下一次 attempt
 # 会从下一个未提交的节点续跑（见 _invoke_with_retry）。
 # 注意：如果卡住的是某一个节点本身耗时超过这个值（而不是"剩余步骤总数多"），
-# 每次 attempt 都会在这同一个节点上超时，重试无法绕开——这种情况要调大这个值，
-# 不是加 attempt 次数。
-AGENT_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("AGENT_ATTEMPT_TIMEOUT_SECONDS", "60"))
-# 最多尝试几次（含第一次）。续跑机制下重试不会重跑已提交的节点，主要用来兜住
-# 网络抖动、DeepSeek 偶发超时/5xx 这类瞬时故障，不是为了"给任务更多时间"。
+# 每次 attempt 都会在这同一个节点上超时，重试无法绕开——这种情况要调大这个值，不是加 attempt 次数。
+AGENT_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("AGENT_ATTEMPT_TIMEOUT_SECONDS", "100"))
+# 最多尝试几次（含第一次）。
+# 续跑机制下重试不会重跑已提交的节点，主要用来兜住网络抖动、偶发超时/5xx 这类瞬时故障，不是为了"给任务更多时间"。
 AGENT_MAX_ATTEMPTS = int(os.getenv("AGENT_MAX_ATTEMPTS", "3"))
+# 两次尝试之间等多久再重试，按 attempt 次数线性增长（1st retry 等待 3s，2nd retry 等待 6s，3rd retry 等待 9s）。
 AGENT_RETRY_BACKOFF_SECONDS = float(os.getenv("AGENT_RETRY_BACKOFF_SECONDS", "3"))
 # 处理超过这么久还没回复，先提示用户一句"还在处理"，避免用户以为卡死了
 PROCESSING_NOTICE_SECONDS = float(os.getenv("PROCESSING_NOTICE_SECONDS", "20"))
-
+# 处理失败时给用户的通用报错提示，避免把 agent 内部的异常信息直接暴露给用户。
 FAILURE_MESSAGE = "抱歉，刚刚处理你的消息时出错了，请稍后再试一次。"
 
 runs_store = RunsStore(DATA_DIR / "runs.sqlite")
@@ -83,9 +89,10 @@ def _files_saved_this_turn(messages: list) -> list[Path]:
 
     thread_id 按 user_id 复用，result["messages"] 会带上该会话的完整历史，
     所以只取最后一条 HumanMessage 之后的部分，避免把之前几轮已经发过的文件重新发一遍。
-    _FILE_OUTPUT_TOOL_NAMES 里的工具都约定：返回内容的第一行是实际保存的绝对路径
-    （save_file 返回内容就是纯路径；excel_tools 里的工具在路径后面还会附一段给 agent
-    看的说明/预览文字，但第一行仍然是路径，保持这个约定方便这里统一提取）。
+    _FILE_OUTPUT_TOOL_NAMES 里的工具都用 response_format="content_and_artifact"
+    声明：真实的绝对路径只放在 ToolMessage.artifact 里，不会进入喂给模型的
+    content（否则模型会拿这个真实路径去调内置的文件系统工具，而那些工具跑在
+    虚拟路径空间里，根本找不到这个路径——历史上就踩过这个坑）。
 
     同一个文件路径只保留一份：aggregate_excel_sheet/create_chart_sheet 对已经在
     output/ 里的文件是原地覆盖（见 excel_tools._resolve_save_path），一次任务里
@@ -99,9 +106,9 @@ def _files_saved_this_turn(messages: list) -> list[Path]:
     for msg in messages[start:]:
         if not (isinstance(msg, ToolMessage) and msg.name in _FILE_OUTPUT_TOOL_NAMES):
             continue
-        content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        first_line = content.splitlines()[0] if content else ""
-        path = Path(first_line)
+        if not msg.artifact:
+            continue
+        path = Path(msg.artifact)
         if not path.is_file():
             continue
         resolved = path.resolve()
@@ -184,6 +191,29 @@ async def _stream_attempt(
                         await _send_text(client, user_id, text)
 
 
+async def _send_files_saved_this_turn(user_id: str, client: httpx.AsyncClient) -> None:
+    """尽力把本轮已经生成、落盘的文件发给用户，即使 agent 本轮整体失败。
+
+    durability="sync" 保证每个节点执行完就同步落盘 checkpoint，所以即使最后一次
+    模型调用（比如续跑到 summarization 或最终回复这一步）反复超时导致整轮
+    判定为失败，之前已经跑完的 save_file/create_chart_sheet 等工具调用产出的
+    文件仍然留在 checkpoint 里——不在失败路径里也尝试发送，就等于把已经生成好
+    的结果凭空丢掉，用户只会收到一句报错。
+    """
+    config: RunnableConfig = {"configurable": {"thread_id": user_id}}
+    try:
+        snapshot = await _runtime.agent.aget_state(config)
+    except Exception:
+        logger.exception("读取 %s 的 checkpoint 失败，无法尝试发送本轮已生成的文件", user_id)
+        return
+    messages = snapshot.values.get("messages") or []
+    for path in _files_saved_this_turn(messages):
+        try:
+            await _send_file(client, user_id, path)
+        except Exception:
+            logger.exception("发送文件 %s 给 %s 失败", path, user_id)
+
+
 async def _invoke_with_retry(user_id: str, run_id: str, body: str, client: httpx.AsyncClient):
     """带超时和重试地跑一次完整对话轮次，返回结束后的最终状态。
 
@@ -251,6 +281,7 @@ async def _process_message(user_id: str, run_id: str, body: str) -> None:
             await runs_store.amark_error(run_id, f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
             with contextlib.suppress(Exception):
                 await _send_text(client, user_id, FAILURE_MESSAGE)
+            await _send_files_saved_this_turn(user_id, client)
             return
         finally:
             notice_task.cancel()
@@ -293,14 +324,33 @@ async def webhook(request: Request) -> JSONResponse:
 
     data = payload.get("data") or {}
     user_id = data.get("from")
-    body = data.get("body")
+    body = data.get("body") or ""
+    media = data.get("media")
+    media_error = data.get("mediaError")
 
-    if not user_id or not body:
+    if not user_id or not (body or media or media_error):
         return JSONResponse({"ok": True})
 
     if user_id.endswith("@g.us"):
         # 默认不自动回复群聊，避免机器人在群里刷屏
         return JSONResponse({"ok": True})
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        if media_error:
+            with contextlib.suppress(Exception):
+                await _send_text(client, user_id, MEDIA_ERROR_MESSAGE)
+            return JSONResponse({"ok": True})
+
+        if media:
+            suffix = Path(media.get("filename") or "").suffix.lower()
+            if suffix not in ALLOWED_EXCEL_EXTENSIONS:
+                with contextlib.suppress(Exception):
+                    await _send_text(client, user_id, UNSUPPORTED_FORMAT_MESSAGE)
+                return JSONResponse({"ok": True})
+
+            saved_path = save_uploaded_file(user_id, media["filename"], base64.b64decode(media["data"]))
+            notice = f"[用户上传了文件：{saved_path.name}]"
+            body = f"{body}\n{notice}" if body else notice
 
     run_id = await runs_store.acreate_run(user_id)
     task = asyncio.create_task(_process_message(user_id, run_id, body))

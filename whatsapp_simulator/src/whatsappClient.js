@@ -89,7 +89,8 @@ function registerEvents(c) {
       console.debug(`[whatsappClient] 发送者不在白名单，跳过推送: ${senderPhone}`);
       return;
     }
-    webhook.dispatch('message', {
+
+    const payload = {
       id: message.id?._serialized,
       from,
       to: message.to,
@@ -97,7 +98,33 @@ function registerEvents(c) {
       type: message.type,
       hasMedia: message.hasMedia,
       timestamp: message.timestamp,
-    });
+    };
+
+    // 目前只处理以「文件」形式发送的附件（type === 'document'）；图片/语音/贴纸等
+    // 其它带媒体的消息类型不下载、不转发，避免无意义的下载流量。
+    if (message.type === 'document' && message.hasMedia) {
+      try {
+        const media = await message.downloadMedia();
+        const sizeBytes = Buffer.byteLength(media.data, 'base64');
+        if (sizeBytes > config.maxMediaSizeMB * 1024 * 1024) {
+          console.warn(
+            `[whatsappClient] 文件超出大小限制 (${sizeBytes} bytes > ${config.maxMediaSizeMB}MB)，跳过转发: ${media.filename}`
+          );
+          payload.mediaError = 'too_large';
+        } else {
+          payload.media = {
+            mimetype: media.mimetype,
+            filename: media.filename,
+            data: media.data,
+          };
+        }
+      } catch (err) {
+        console.error('[whatsappClient] 下载文件失败:', err);
+        payload.mediaError = 'download_failed';
+      }
+    }
+
+    webhook.dispatch('message', payload);
   });
 
   c.on('message_ack', (message, ack) => {
