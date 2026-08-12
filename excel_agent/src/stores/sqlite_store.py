@@ -15,8 +15,8 @@
 - 不支持 TTL（`supports_ttl` 默认 False，`put(..., ttl=...)` 会直接报错，符合基类约定）。
 - `search`/`list_namespaces` 是整表扫描后在 Python 里过滤，量大时会慢——本项目每个
   用户只存 `/memories/AGENTS.md` 一个文件，数据量小，没有这个问题。
-- 每次 `batch` 调用都新开一个 SQLite 连接、跑完就关，不维护长连接，避免多线程
-  （webhook 走 `run_in_threadpool`，每次可能在不同线程执行）共享连接的麻烦。
+- 每次 `batch` 调用都新开一个 SQLite 连接、跑完就关，不维护长连接，避免并发调用间
+  共享连接的麻烦。
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ def build_stem(title_stem: str, ctx: ContextSchema | None) -> str:
     - 调试（直接运行 src/main.py）：DEBUG_<标题>_<时间戳>_<随机数>
     - WhatsApp 用户：<标题>_<时间戳>_<用户ID>_<随机数>
     调用来源和用户 ID 通过 ContextSchema 传入
-    （见 src/main.py 和 src/webhook.py 里 agent 调用处的 context 参数）。
+    （见 src/main.py 和 src/webhook/whatsapp.py 里 agent 调用处的 context 参数）。
     """
     caller = ctx.caller if ctx else "debug"
     user_id = ctx.user_id if ctx else None
