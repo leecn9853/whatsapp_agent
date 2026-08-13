@@ -134,6 +134,15 @@ function registerEvents(c) {
       ack,
     });
   });
+
+  // 用户在任一已连接设备上删除整个对话时触发，用于联动清空 agent 侧的对话历史。
+  // 不做白名单/@lid 过滤：这个事件只触发一次幂等的 delete，目标 user_id 没有
+  // 对应历史时也是 no-op，没必要复用 message 路径那套过滤逻辑。
+  c.on('chat_removed', (chat) => {
+    const id = chat.id?._serialized;
+    if (!id) return;
+    webhook.dispatch('chat_removed', { from: id });
+  });
 }
 
 const INIT_RETRY_DELAY_MS = 5000;

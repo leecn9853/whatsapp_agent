@@ -36,7 +36,7 @@ MEDIA_ERROR_MESSAGE = "刚才那个文件没有接收成功（可能太大或下
 # 会从下一个未提交的节点续跑（见 _invoke_with_retry）。
 # 注意：如果卡住的是某一个节点本身耗时超过这个值（而不是"剩余步骤总数多"），
 # 每次 attempt 都会在这同一个节点上超时，重试无法绕开——这种情况要调大这个值，不是加 attempt 次数。
-AGENT_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("AGENT_ATTEMPT_TIMEOUT_SECONDS", "100"))
+AGENT_ATTEMPT_TIMEOUT_SECONDS = float(os.getenv("AGENT_ATTEMPT_TIMEOUT_SECONDS", "300"))
 # 最多尝试几次（含第一次）。
 # 续跑机制下重试不会重跑已提交的节点，主要用来兜住网络抖动、偶发超时/5xx 这类瞬时故障，不是为了"给任务更多时间"。
 AGENT_MAX_ATTEMPTS = int(os.getenv("AGENT_MAX_ATTEMPTS", "3"))
@@ -316,8 +316,26 @@ async def _process_message(user_id: str, run_id: str, body: str) -> None:
                 logger.exception("发送文件 %s 给 %s 失败", path, user_id)
 
 
+async def _reset_thread(user_id: str) -> None:
+    """删除该用户的对话历史（checkpoint），不影响 /memories/ 长期记忆。
+
+    复用 _lock_for(user_id) 是为了不和该用户正在处理中的 _process_message 并发：
+    等它跑完再删，避免删除过程中还有新的 checkpoint 写入进来。
+    """
+    async with _lock_for(user_id):
+        await _runtime.agent.checkpointer.adelete_thread(user_id)
+
+
 async def webhook(request: Request) -> JSONResponse:
     payload = await request.json()
+
+    if payload.get("event") == "chat_removed":
+        data = payload.get("data") or {}
+        user_id = data.get("from")
+        if user_id and not user_id.endswith("@g.us"):
+            task = asyncio.create_task(_reset_thread(user_id))
+            _track(task)
+        return JSONResponse({"ok": True})
 
     if payload.get("event") != "message":
         return JSONResponse({"ok": True})

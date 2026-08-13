@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)"
+    ],
+    "additionalDirectories": [
+      "/Users/CoderYing/Projects/whatsapp_agent/whatsapp_simulator/src"
+    ]
+  }
+}
