@@ -18,12 +18,18 @@ description: 用于在 Excel 表格（.xlsx）里生成图表、汇总表的任�
    - 不确定聚合维度时，优先选用户消息里明确提到的维度；用户没说清楚就选数据里最自然的
      主维度（时间序列数据优先按时间；否则按数量最少、最能概括全局的分类维度分组），
      不要一次性把所有维度都塞进 group_by。
-3. **选图表类型**（`create_chart_sheet` 的 `chart_type`）：
-   - 时间序列（月份/季度/年度趋势）→ `line`（折线图）。
-   - 不同类别之间的数值对比（部门/产品线/团队排名）→ `bar`（柱状图）。
+   - **例外：`scatter`（散点图）通常不适用这条规则**——散点图的价值在于展示每个原始
+     观测点的分布，聚合反而会抹掉相关性，一般应直接对明细数据画图。详见
+     [references/scatter-chart.md](references/scatter-chart.md)。
+3. **选图表类型**（`create_chart_sheet` 的 `chart_type`），每种类型的适用场景、参数
+   细节、常见错误见对应的参考文档：
+   - 时间序列（月份/季度/年度趋势）→ `line`（折线图）。见 [references/line-chart.md](references/line-chart.md)。
+   - 不同类别之间的数值对比（部门/产品线/团队排名）→ `bar`（柱状图）。见 [references/bar-chart.md](references/bar-chart.md)。
    - 单一指标的占比构成，且类别数 ≤ 6 → `pie`（饼图）；类别数更多时改用 `bar`，
-     饼图切太多块反而看不清占比。
-   - 两个数值变量之间的相关性 → `scatter`（散点图）。
+     饼图切太多块反而看不清占比。见 [references/pie-chart.md](references/pie-chart.md)。
+   - 两个数值变量之间的相关性 → `scatter`（散点图）；注意它的 `category_column`
+     参数语义和其他类型不同（是数值 X 轴，不是分类列），务必先看
+     [references/scatter-chart.md](references/scatter-chart.md) 再调用。
 4. **生成图表**：调用 `create_chart_sheet`，`category_column` 传聚合/原表里代表类别或时间的
    那一列，`value_columns` 传要画的数值列（pie 只能传一个）。同一份数据想看多个角度时，
    多次调用、用不同的 `new_sheet_name`，不要试图把所有信息塞进一张图表。
@@ -46,6 +52,6 @@ openpyxl 生成的是原生 Excel 图表对象，样式能力有限，不需要�
 
 - [ ] `category_column`/`value_columns`/`group_by` 用的都是目标 sheet 表头里实际存在的列名
 - [ ] 图表类型匹配数据形态（时间用折线、类别对比用柱状、少类别占比用饼图、相关性用散点）
-- [ ] 数据粒度过细时已经先聚合，没有直接对几百行原始明细出图
+- [ ] 数据粒度过细时已经先聚合，没有直接对几百行原始明细出图（`scatter` 除外，散点图通常应保留明细）
 - [ ] 多步骤之间正确传递了链式产出的文件名，没有产出一堆彼此无关的文件
 - [ ] 回复里说明了生成了什么图表/汇总、基于哪张 sheet、聚合了哪些维度
