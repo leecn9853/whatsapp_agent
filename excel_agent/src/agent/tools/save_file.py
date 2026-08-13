@@ -4,10 +4,10 @@ from pathlib import Path
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from src.tools._naming import build_stem
+from src.agent.tools._naming import build_stem
 
 # 生成文件统一落到项目根目录下的 output/
-OUT_DIR = Path(__file__).resolve().parent.parent.parent / "output"
+OUT_DIR = Path(__file__).resolve().parent.parent.parent.parent / "output"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

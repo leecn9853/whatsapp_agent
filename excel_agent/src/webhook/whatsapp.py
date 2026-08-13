@@ -15,10 +15,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from src.context import ContextSchema
-from src.main import DATA_DIR
-from src.stores.runs_store import RunsStore
-from src.tools.excel_tools import OUTPUT_FILE_TOOL_NAMES, save_uploaded_file
-from src.webhook import _runtime
+from src.agent.main import DATA_DIR
+from src.webhook.runs_store import RunsStore
+from src.agent.tools.excel_tools import OUTPUT_FILE_TOOL_NAMES, save_uploaded_file
+from src.agent import _runtime
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 news_agent/
-finance_agent/
-finace_agent/
 examples/
+excel_agent_backup/
+overview_frontend/
 
 # OS
 .DS_Store

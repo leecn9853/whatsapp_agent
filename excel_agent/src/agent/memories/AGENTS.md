@@ -1,7 +1,7 @@
 <!--
 这是新用户的默认记忆模板。只在某个 WhatsApp 联系人第一次对话、
 且其专属记忆（/memories/AGENTS.md，按 user_id 隔离存于 Store）还不存在时，
-由 src/main.py 里的 seed_default_memory 中间件写入一次作为起点。
+由 src/agent/main.py 里的 seed_default_memory 中间件写入一次作为起点。
 之后这份记忆完全由 Agent 通过 edit_file 自行维护和更新，
 修改这里的模板只影响"新用户"的起点，不会同步到已经建立过记忆的老用户。
 -->

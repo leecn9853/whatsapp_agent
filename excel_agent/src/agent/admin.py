@@ -8,7 +8,7 @@ checkpoints.sqlite,和服务进程里 AsyncSqliteSaver 持有的长连接并发�
 
 这里换成让服务进程自己暴露路由,直接复用已经在跑的那唯一一份 agent/store 实例——
 不用重新构建、不用配 key、也没有第二个进程碰同一个文件。agent 由 lifespan 异步
-构建后存在 src/webhook/_runtime.py 里，这里不能在模块顶层直接 import 它本身
+构建后存在 src/agent/_runtime.py 里，这里不能在模块顶层直接 import 它本身
 （此时还没构建好），要用 `_runtime.agent` 每次访问最新值。
 
 不对外暴露：即便 uvicorn 绑定的是 0.0.0.0,这里也在代码里显式校验
@@ -27,8 +27,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Route
 
-from src.main import DATA_DIR, store
-from src.webhook import _runtime
+from src.agent.main import DATA_DIR, store
+from src.agent import _runtime
 
 CHECKPOINTS_DB = DATA_DIR / "checkpoints.sqlite"
 MEMORY_DB = DATA_DIR / "memory_store.sqlite"
@@ -170,7 +170,7 @@ async def admin_users(request: Request) -> HTMLResponse | RedirectResponse:
 @local_only
 async def admin_memory(request: Request) -> HTMLResponse:
     user_id = request.path_params["user_id"]
-    # user_id 传原始值即可（比如带句点的 "12345@c.us"），这里按 src/main.py 里
+    # user_id 传原始值即可（比如带句点的 "12345@c.us"），这里按 src/agent/main.py 里
     # namespace 工厂用的同一种规则（句点替换成下划线）转换后再查找；对已经是
     # 安全 namespace 值（从 /admin/users 表格点进来）的输入，.replace 是空操作。
     namespace = (user_id.replace(".", "_"),)

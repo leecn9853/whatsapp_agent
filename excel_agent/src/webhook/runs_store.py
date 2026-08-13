@@ -4,7 +4,7 @@
 error/cancelled），配合 webhook.py 里"立即 ack + 后台执行"的模式，让后台
 任务的进度/结果可以脱离 HTTP 请求生命周期单独查询、排错。
 
-风格上和 sqlite_store.py 保持一致：每次调用新开一个 sqlite3 连接、跑完就
+风格上和 src/agent/stores/sqlite_store.py 保持一致：每次调用新开一个 sqlite3 连接、跑完就
 关，不维护长连接（webhook 的后台任务可能跑在不同的 asyncio.to_thread 线程
 里，避免共享连接的麻烦）。
 """

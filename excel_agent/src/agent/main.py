@@ -19,15 +19,15 @@ from deepagents import create_deep_agent, FilesystemPermission
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
 from src.context import ContextSchema
-from src.stores.sqlite_store import SqliteStore
-from src.tools.excel_tools import (
+from src.agent.stores.sqlite_store import SqliteStore
+from src.agent.tools.excel_tools import (
     aggregate_excel_sheet,
     create_chart_sheet,
     inspect_excel,
     list_excel_files,
 )
-from src.tools.save_file import save_file
-from src.tools.tavily_search import web_search
+from src.agent.tools.save_file import save_file
+from src.agent.tools.tavily_search import web_search
 
 # LangGraph 在把我们传入的 context=ContextSchema(...) 序列化进 checkpoint/tracing
 # 时会触发这条警告，纯粹是噪音——不影响 context 实际的传递和使用，只是刷屏。
@@ -104,11 +104,11 @@ MEMORY_PATH = "/memories/AGENTS.md"
 # agent 不注册为 LangGraph 平台图，而是由 webhook 包直接 invoke，所以持久化
 # （跨 thread 记忆 + 对话历史）需要自己管理，不能依赖平台自动注入的
 # store/checkpointer。
-DATA_DIR = SRC_DIR.parent / "data"
+DATA_DIR = SRC_DIR.parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 # store：管 /memories/ 下按 user_id 隔离的跨对话长期记忆。官方没有现成的 SQLite
-# Store 实现（只有内存版和 Postgres 版），这里用 src/stores/sqlite_store.py 里
+# Store 实现（只有内存版和 Postgres 版），这里用 src/agent/stores/sqlite_store.py 里
 # 自己写的简易版本（细节和限制见该文件的模块说明）。
 store = SqliteStore(DATA_DIR / "memory_store.sqlite")
 

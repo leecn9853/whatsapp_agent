@@ -23,9 +23,9 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from src.context import ContextSchema
-from src.tools._naming import build_stem, sanitize_user_id
+from src.agent.tools._naming import build_stem, sanitize_user_id
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INPUT_DIR = _PROJECT_ROOT / "input"
 OUTPUT_DIR = _PROJECT_ROOT / "output"
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,7 +64,7 @@ def _autosize(ws) -> None:
 
 def _user_dir(base: Path, ctx: ContextSchema | None) -> Path:
     """WhatsApp 调用按 user_id 隔离到子目录（自动创建），避免不同用户互相看到/
-    处理到对方上传的文件；调试（直接跑 src/main.py）时返回 base 本身，行为不变，
+    处理到对方上传的文件；调试（直接跑 src/agent/main.py）时返回 base 本身，行为不变，
     仍然使用 input/gen_reports.py 生成的根目录样例文件。
     """
     if ctx and ctx.caller == "whatsapp" and ctx.user_id:
