@@ -19,7 +19,6 @@ from deepagents import create_deep_agent, FilesystemPermission
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
 from src.context import ContextSchema
-from src.agent.stores.sqlite_store import SqliteStore
 from src.agent.tools.excel_tools import (
     aggregate_excel_sheet,
     create_chart_sheet,
@@ -101,34 +100,27 @@ backend = CompositeBackend(
 
 MEMORY_PATH = "/memories/AGENTS.md"
 
-# agent 不注册为 LangGraph 平台图，而是由 webhook 包直接 invoke，所以持久化
-# （跨 thread 记忆 + 对话历史）需要自己管理，不能依赖平台自动注入的
-# store/checkpointer。
-DATA_DIR = SRC_DIR.parent.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
-
-# store：管 /memories/ 下按 user_id 隔离的跨对话长期记忆。官方没有现成的 SQLite
-# Store 实现（只有内存版和 Postgres 版），这里用 src/agent/stores/sqlite_store.py 里
-# 自己写的简易版本（细节和限制见该文件的模块说明）。
-store = SqliteStore(DATA_DIR / "memory_store.sqlite")
-
 
 @before_agent
-def seed_default_memory(
+async def seed_default_memory(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> None:  # noqa: ARG001
     """新用户第一次对话、还没有专属记忆时，把磁盘上的默认模板写入其记忆。
 
     之后完全由 Agent 通过 edit_file 自行维护，这里只负责起点。
+
+    必须用 aread/awrite（而不是 read/write）：/memories/ 路由到的 StoreBackend
+    对 AsyncPostgresStore 会在同步接口上直接报错拒绝调用（防止在事件循环里
+    发生死锁），只有 aread/awrite 会走 store.aget/aput 的原生异步接口。
     """
-    if backend.read(MEMORY_PATH).error is None:
+    if (await backend.aread(MEMORY_PATH)).error is None:
         return None  # 该用户已经有记忆了，不覆盖
 
-    template = fs_backend.read(MEMORY_PATH)  # 读磁盘上的默认模板 src/memories/AGENTS.md
+    template = await fs_backend.aread(MEMORY_PATH)  # 读磁盘上的默认模板 src/memories/AGENTS.md
     if template.error is not None or template.file_data is None:
         return None
 
-    backend.write(MEMORY_PATH, template.file_data["content"])
+    await backend.awrite(MEMORY_PATH, template.file_data["content"])
     return None
 
 
@@ -173,13 +165,11 @@ async def topic_gate(
 #   agent.invoke 开始时，自动按 thread_id 取最新一条 checkpoint 恢复状态；图的
 #   每一步（每个节点跑完）自动落盘一次；下一次同 thread_id 的请求自动接着最新
 #   状态续跑。
-# - 官方的持久化 SqliteSaver 只有同步接口（aget_tuple/aput/aput_writes/alist
-#   全部 raise NotImplementedError），而异步版 AsyncSqliteSaver 要求构造时
-#   已经有一个运行中的事件循环（__init__ 里调用 asyncio.get_running_loop()）。
-#   本模块在 uvicorn 事件循环启动之前就被 import，所以这里不能直接构造
-#   checkpointer，只能提供 build_agent(checkpointer) 工厂函数，交给
-#   src/webhook/__init__.py 的 Starlette lifespan（此时事件循环已经在跑）
-#   用 AsyncSqliteSaver.from_conn_string(...) 构造好之后再传进来。
+# - AsyncPostgresSaver 构造时要求已经有一个运行中的事件循环（内部会调用
+#   asyncio.get_running_loop()）。本模块在 uvicorn 事件循环启动之前就被
+#   import，所以这里不能直接构造 checkpointer，只能提供 build_agent(checkpointer,
+#   store) 工厂函数，交给 src/agent_server/__init__.py 的 Starlette lifespan
+#   （此时事件循环已经在跑）构造好之后再传进来。
 # - 增长问题：deepagents 的 DeepAgentState 已经给 messages 字段配了
 #   DeltaChannel（见 deepagents/graph.py），每一步存的是增量而不是全量快照
 #   （每 50 步才存一次完整快照），把 checkpoint 存储量从 O(对话轮数²) 降到了
@@ -188,8 +178,9 @@ async def topic_gate(
 #   版本里没有任何 checkpointer 实现它（包括 InMemorySaver），且其文档明确警告
 #   对使用 DeltaChannel 的图做朴素裁剪会悄悄弄断历史链、丢数据——所以这里不额外
 #   加自定义的裁剪/删除逻辑，等真的遇到数据库文件过大再处理。
-def build_agent(checkpointer):
-    """创建 DeepAgent 实例。checkpointer 由调用方（webhook lifespan）异步构造后传入。
+def build_agent(checkpointer, store):
+    """创建 DeepAgent 实例。checkpointer、store 都由调用方（agent_server 的
+    lifespan）异步构造后传入——分别是 AsyncPostgresSaver、AsyncPostgresStore。
 
     deepagents 内部会自动注入：
     - 任务规划中间件 (TodoListMiddleware / write_todos)
