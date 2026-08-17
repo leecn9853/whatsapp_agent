@@ -1,25 +1,25 @@
 from pydantic import BaseModel
 
 
-class OrderRow(BaseModel):
-    order_no: str
-    company_name: str
-    product_name: str
-    product_category: str
-    quantity: int
-    unit_price: float
+class SupplierPurchaseRow(BaseModel):
+    supplier_name: str
+    purchase_category: str
+    purchase_date: str
+    purchase_amount: float
+    payment_status: str
+
+
+class MonthlyCostRow(BaseModel):
+    month: str
+    department: str
+    cost_category: str
     amount: float
-    currency: str
-    destination_country: str
-    incoterm: str
-    order_date: str
-    status: str
-    batch_no: str | None = None
-    shelf_life_days: int | None = None
+    budget: float
+    over_budget: str
 
 
-class PagedOrders(BaseModel):
+class PagedMonthlyCosts(BaseModel):
     total: int
     page: int
     page_size: int
-    items: list[OrderRow]
+    items: list[MonthlyCostRow]

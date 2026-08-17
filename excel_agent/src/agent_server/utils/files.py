@@ -10,9 +10,10 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from src.agent.tools.cost_report_tools import COST_REPORT_OUTPUT_TOOL_NAMES
 from src.agent.tools.excel_tools import OUTPUT_FILE_TOOL_NAMES
 
-FILE_OUTPUT_TOOL_NAMES = {"save_file", *OUTPUT_FILE_TOOL_NAMES}
+FILE_OUTPUT_TOOL_NAMES = {"save_file", *OUTPUT_FILE_TOOL_NAMES, *COST_REPORT_OUTPUT_TOOL_NAMES}
 
 
 def files_saved_this_turn(messages: list) -> list[Path]:

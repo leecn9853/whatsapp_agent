@@ -25,6 +25,7 @@ from src.agent.tools.excel_tools import (
     inspect_excel,
     list_excel_files,
 )
+from src.agent.tools.cost_report_tools import generate_cost_report
 from src.agent.tools.save_file import save_file
 from src.agent.tools.tavily_search import web_search
 
@@ -55,6 +56,7 @@ tools = [
     inspect_excel,
     aggregate_excel_sheet,
     create_chart_sheet,
+    generate_cost_report,
 ]
 
 # 中间件：拦截并记录每一次工具调用（横切关注点示例）
@@ -124,11 +126,15 @@ async def seed_default_memory(
     return None
 
 
-_OFF_TOPIC_REPLY = "这个问题超出我的职责范围（我只处理 Excel 表格/图表相关的请求），建议换用其他 AI 助手咨询。"
+_OFF_TOPIC_REPLY = "这个我帮不上忙哦～我主要负责 Excel 表格和图表处理，这类问题建议问问其他 AI 助手。"
 
 _TOPIC_GATE_SYSTEM_PROMPT = (
-    "判断以下对话里用户最新这句话是否是 Excel 表格处理/图表生成相关的请求"
-    "（包括基于前面上下文对已有任务的追问、调整）。只回答 yes 或 no，不要解释。"
+    "判断以下对话里用户最新这句话是否满足下面任一条件：\n"
+    "1) 是 Excel 表格处理/图表生成相关的请求（包括基于前面上下文对已有任务的"
+    "追问、调整）；\n"
+    "2) 是打招呼、问候、寒暄、感谢、告别、确认收到、闲聊式的礼貌用语等社交性"
+    "发言，且不构成一个具体的、与 Excel 无关的知识/信息请求。\n"
+    "只要满足其中一条就回答 yes，否则回答 no。只回答 yes 或 no，不要解释。"
 )
 
 
@@ -142,6 +148,10 @@ async def topic_gate(
     看到像"台湾的大学怎么样"这类事实性问题，会倾向于直接调 web_search，覆盖掉规则本身。
     这里用同一个 llm 客户端单独问一句 yes/no（这次调用没有绑定任何工具，天然不会调用
     web_search），判定跑题就直接 jump_to="end"，主模型和工具全程不会被调用。
+
+    判断标准比"是不是 Excel 任务"更宽：打招呼/寒暄/感谢/告别等社交性发言也算
+    on-topic（放行给主模型走正常礼貌回应），只有具体的、与 Excel 无关的知识/
+    信息请求才会被拦下——否则用户发个"你好"也会收到 _OFF_TOPIC_REPLY，体验很怪。
 
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
     同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常 Excel 任务。
@@ -239,10 +249,13 @@ def build_agent(checkpointer, store):
 擅长读懂表格结构、按需聚合数据、在表格里生成图表（具体规范见已挂载的技能文件）。
 
 【任务范围（硬性红线）】
-只处理和 Excel 表格处理/图表生成相关的请求。凡是与此无关的内容——不论具体是
-时事新闻、天气、其他领域知识问答、闲聊还是别的什么——都不要调用任何工具，不要
-展开回答，用一两句话简短说明这不是你的职责范围，并提示对方可以用其他 AI 助手
-获取相关信息，到此结束。
+只处理和 Excel 表格处理/图表生成相关的请求。凡是与此无关的具体知识/信息请求
+——不论具体是时事新闻、天气、其他领域知识问答还是别的什么——都不要调用任何
+工具，不要展开回答，用一两句话简短说明这不是你的职责范围，并提示对方可以用
+其他 AI 助手获取相关信息，到此结束。
+打招呼、问候、寒暄、感谢、告别这类社交性发言不算跑题，正常礼貌回应即可（可以
+顺带说明自己能帮忙处理 Excel 表格/图表），不要调用任何工具，也不要触发上面的
+拒答话术。
 
 【任务执行】
 1. 优先使用 write_todos 工具将复杂任务拆解为多步规划。
