@@ -1,5 +1,5 @@
 """跑一次 agent 对话轮次的共享执行引擎：attempt 重试 + 从 checkpoint 续跑 + 工具调用
-事件提取，供 routes/runs.py（SSE API）和 whatsapp/processor.py（webhook）复用。
+事件提取，供 channels/tob/routes.py（SSE API）和 channels/whatsapp/processor.py（webhook）复用。
 
 run_agent_turn 是个异步生成器：过程中每出现一次工具调用就 yield 一次工具名（str），
 成功时最后 yield 一个 RunResult 然后正常结束；全部 attempt 耗尽后 raise RunFailed
@@ -22,8 +22,8 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from src.context import ContextSchema
-from src.agent_server import _runtime
-from src.agent_server.utils.files import files_saved_this_turn
+from src.agent_server.shared import runtime as _runtime
+from src.agent_server.shared.files import files_saved_this_turn
 
 logger = logging.getLogger(__name__)
 

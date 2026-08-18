@@ -1,7 +1,7 @@
 """从本轮（最后一条 HumanMessage 之后）产出文件的工具调用结果里提取文件路径。
 
-目前唯一的调用方是 _engine.py（run_agent_turn 成功/失败两条路径都要用），单独
-放一个模块是因为它是纯函数，不依赖 _runtime 的任何运行时状态。
+目前唯一的调用方是 shared/engine.py（run_agent_turn 成功/失败两条路径都要用），单独
+放一个模块是因为它是纯函数，不依赖 shared/runtime.py 的任何运行时状态。
 """
 
 from __future__ import annotations

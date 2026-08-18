@@ -1,8 +1,12 @@
-"""POST /webhook：接收 WhatsApp 网关推送的消息事件，解析后交给 whatsapp/processor.py
-处理，处理过程转入后台任务。
+"""POST /webhook：接收 WhatsApp 网关推送的消息事件，解析后交给 channels/whatsapp/
+processor.py 处理，处理过程转入后台任务。
 
 上传文件格式校验、下载失败提示这类"跟有没有调用 agent 无关"的短路回复留在这里；
-真正调用 agent、推送结果的逻辑在 whatsapp/processor.py。
+真正调用 agent、推送结果的逻辑在 channels/whatsapp/processor.py。
+
+这里拿到的 `phone` 是 WhatsApp 网关认的原始手机号，只用来发消息；调 processor 的
+run_agent_turn 相关函数时要转成 `thread_ids.whatsapp_thread_id(phone)` 再传，不能
+把裸手机号当 thread_id 用（否则会和其它渠道的 thread_id 撞命名空间）。
 """
 
 import asyncio
@@ -16,9 +20,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from src.agent.tools.excel_tools import save_uploaded_file
-from src.agent_server import _runtime
-from src.agent_server.whatsapp.client import send_text
-from src.agent_server.whatsapp.processor import process_message, reset_thread
+from src.agent_server.shared import runtime as _runtime
+from src.agent_server.shared.thread_ids import whatsapp_thread_id
+from src.agent_server.channels.whatsapp.client import send_text
+from src.agent_server.channels.whatsapp.processor import process_message, reset_thread
 
 # 目前只接收 Excel 文件；document 类型消息的后缀不在这个集合里就直接告知用户不支持，
 # 不创建 run、不调用 agent。
@@ -41,9 +46,9 @@ async def webhook(request: Request) -> JSONResponse:
 
     if payload.get("event") == "chat_removed":
         data = payload.get("data") or {}
-        user_id = data.get("from")
-        if user_id and not user_id.endswith("@g.us"):
-            task = asyncio.create_task(reset_thread(user_id))
+        phone = data.get("from")
+        if phone and not phone.endswith("@g.us"):
+            task = asyncio.create_task(reset_thread(whatsapp_thread_id(phone)))
             _track(task)
         return JSONResponse({"ok": True})
 
@@ -51,37 +56,38 @@ async def webhook(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
 
     data = payload.get("data") or {}
-    user_id = data.get("from")
+    phone = data.get("from")
     body = data.get("body") or ""
     media = data.get("media")
     media_error = data.get("mediaError")
 
-    if not user_id or not (body or media or media_error):
+    if not phone or not (body or media or media_error):
         return JSONResponse({"ok": True})
 
-    if user_id.endswith("@g.us"):
+    if phone.endswith("@g.us"):
         # 默认不自动回复群聊，避免机器人在群里刷屏
         return JSONResponse({"ok": True})
 
     async with httpx.AsyncClient(timeout=60) as client:
         if media_error:
             with contextlib.suppress(Exception):
-                await send_text(client, user_id, MEDIA_ERROR_MESSAGE)
+                await send_text(client, phone, MEDIA_ERROR_MESSAGE)
             return JSONResponse({"ok": True})
 
         if media:
             suffix = Path(media.get("filename") or "").suffix.lower()
             if suffix not in ALLOWED_EXCEL_EXTENSIONS:
                 with contextlib.suppress(Exception):
-                    await send_text(client, user_id, UNSUPPORTED_FORMAT_MESSAGE)
+                    await send_text(client, phone, UNSUPPORTED_FORMAT_MESSAGE)
                 return JSONResponse({"ok": True})
 
-            saved_path = save_uploaded_file(user_id, media["filename"], base64.b64decode(media["data"]))
+            saved_path = save_uploaded_file(phone, media["filename"], base64.b64decode(media["data"]))
             notice = f"[用户上传了文件：{saved_path.name}]"
             body = f"{body}\n{notice}" if body else notice
 
-    run_id = await _runtime.runs_store.acreate_run(user_id)
-    task = asyncio.create_task(process_message(user_id, run_id, body))
+    thread_id = whatsapp_thread_id(phone)
+    run_id = await _runtime.runs_store.acreate_run(thread_id)
+    task = asyncio.create_task(process_message(phone, thread_id, run_id, body))
     _track(task)
 
     return JSONResponse({"ok": True})

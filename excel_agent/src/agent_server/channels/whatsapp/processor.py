@@ -1,7 +1,11 @@
 """处理一条已经解析好的 WhatsApp 消息：跑一次 agent 执行、推送进度、发最终结果。
 
-routes/webhook.py 负责把原始 webhook payload 解析成 (user_id, body)，剩下"怎么跑
+channels/whatsapp/routes.py 负责把原始 webhook payload 解析成 (phone, body)，剩下"怎么跑
 agent、怎么把结果推给用户"这部分业务逻辑都在这个模块里。
+
+这里全程区分两个 id：`phone` 是 WhatsApp 网关认的手机号，只用来发消息（send_text/
+send_file）；`thread_id` 是加了 `whatsapp:` 前缀的引擎/checkpoint key（见
+shared/thread_ids.py），只用来跑 agent、锁 thread、删 checkpoint。两者不能混用。
 """
 
 from __future__ import annotations
@@ -14,9 +18,9 @@ import os
 import httpx
 
 from src.context import ContextSchema
-from src.agent_server import _runtime
-from src.agent_server._engine import RunFailed, RunResult, run_agent_turn
-from src.agent_server.whatsapp.client import send_file, send_text
+from src.agent_server.shared import runtime as _runtime
+from src.agent_server.shared.engine import RunFailed, RunResult, run_agent_turn
+from src.agent_server.channels.whatsapp.client import send_file, send_text
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +42,7 @@ TOOL_PROGRESS_MESSAGES: dict[str, str] = {
 }
 
 
-async def _notify_if_slow(client: httpx.AsyncClient, user_id: str) -> None:
+async def _notify_if_slow(client: httpx.AsyncClient, phone: str) -> None:
     """处理超过 PROCESSING_NOTICE_SECONDS 还没结束就提示用户一句，被取消时安静退出。
 
     和下面按工具调用推送的进度提示是互补关系：这句是"完全没有任何工具调用触发
@@ -46,43 +50,43 @@ async def _notify_if_slow(client: httpx.AsyncClient, user_id: str) -> None:
     """
     await asyncio.sleep(PROCESSING_NOTICE_SECONDS)
     try:
-        await send_text(client, user_id, "正在处理中，请稍候…")
+        await send_text(client, phone, "正在处理中，请稍候…")
     except Exception:
-        logger.warning("发送'处理中'提示给 %s 失败", user_id, exc_info=True)
+        logger.warning("发送'处理中'提示给 %s 失败", phone, exc_info=True)
 
 
-async def process_message(user_id: str, run_id: str, body: str) -> None:
+async def process_message(phone: str, thread_id: str, run_id: str, body: str) -> None:
     """跑一次 agent 执行并把结果/进度推送给用户。
 
-    routes/webhook.py 收到消息后立刻 ack，这个函数才是实际耗时的部分——不再阻塞
-    HTTP 响应，结果和过程中的进度提示都通过 send_text/send_file 主动推送。
+    channels/whatsapp/routes.py 收到消息后立刻 ack，这个函数才是实际耗时的部分——不再
+    阻塞 HTTP 响应，结果和过程中的进度提示都通过 send_text/send_file 主动推送。
     """
-    async with _runtime.lock_for(user_id), httpx.AsyncClient(timeout=60) as client:
-        context = ContextSchema(caller="whatsapp", user_id=user_id, run_id=run_id)
-        notice_task = asyncio.create_task(_notify_if_slow(client, user_id))
+    async with _runtime.lock_for(thread_id), httpx.AsyncClient(timeout=60) as client:
+        context = ContextSchema(caller="whatsapp", user_id=thread_id, run_id=run_id)
+        notice_task = asyncio.create_task(_notify_if_slow(client, phone))
 
         result: RunResult | None = None
         try:
-            async for event in run_agent_turn(user_id, body, context, run_id=run_id):
+            async for event in run_agent_turn(thread_id, body, context, run_id=run_id):
                 if isinstance(event, RunResult):
                     result = event
                     continue
                 text = TOOL_PROGRESS_MESSAGES.get(event)
                 if text:
                     with contextlib.suppress(Exception):
-                        await send_text(client, user_id, text)
+                        await send_text(client, phone, text)
         except asyncio.CancelledError:
             await _runtime.runs_store.amark_cancelled(run_id)
             raise
         except RunFailed as fail:
-            logger.exception("处理来自 %s 的消息失败", user_id)
+            logger.exception("处理来自 %s 的消息失败", phone)
             with contextlib.suppress(Exception):
-                await send_text(client, user_id, FAILURE_MESSAGE)
+                await send_text(client, phone, FAILURE_MESSAGE)
             for path in fail.files:
                 try:
-                    await send_file(client, user_id, path)
+                    await send_file(client, phone, path)
                 except Exception:
-                    logger.exception("发送文件 %s 给 %s 失败", path, user_id)
+                    logger.exception("发送文件 %s 给 %s 失败", path, phone)
             return
         finally:
             notice_task.cancel()
@@ -91,31 +95,31 @@ async def process_message(user_id: str, run_id: str, body: str) -> None:
 
         assert result is not None
         try:
-            await send_text(client, user_id, result.reply)
+            await send_text(client, phone, result.reply)
         except Exception:
-            logger.exception("发送回复给 %s 失败", user_id)
+            logger.exception("发送回复给 %s 失败", phone)
             return
 
         for path in result.files:
             try:
-                await send_file(client, user_id, path)
+                await send_file(client, phone, path)
             except httpx.HTTPStatusError as e:
                 logger.error(
                     "发送文件 %s 给 %s 失败：%s %s",
                     path,
-                    user_id,
+                    phone,
                     e.response.status_code,
                     e.response.text,
                 )
             except Exception:
-                logger.exception("发送文件 %s 给 %s 失败", path, user_id)
+                logger.exception("发送文件 %s 给 %s 失败", path, phone)
 
 
-async def reset_thread(user_id: str) -> None:
+async def reset_thread(thread_id: str) -> None:
     """删除该用户的对话历史（checkpoint），不影响 /memories/ 长期记忆。
 
-    复用 _runtime.lock_for(user_id) 是为了不和该用户正在处理中的 process_message
+    复用 _runtime.lock_for(thread_id) 是为了不和该用户正在处理中的 process_message
     并发：等它跑完再删，避免删除过程中还有新的 checkpoint 写入进来。
     """
-    async with _runtime.lock_for(user_id):
-        await _runtime.agent.checkpointer.adelete_thread(user_id)
+    async with _runtime.lock_for(thread_id):
+        await _runtime.agent.checkpointer.adelete_thread(thread_id)

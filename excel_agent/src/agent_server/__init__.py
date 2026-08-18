@@ -1,6 +1,6 @@
 """agent-server 的 Starlette app + lifespan：Postgres 版 checkpointer/store/连接池
-在这里异步构造（要求已有运行中的事件循环），构造完成后存进 _runtime 供各路由模块
-用 `_runtime.xxx` 取最新值。
+在这里异步构造（要求已有运行中的事件循环），构造完成后存进 shared.runtime 供各路由
+模块用 `_runtime.xxx` 取最新值。
 """
 
 import contextlib
@@ -16,10 +16,10 @@ from starlette.applications import Starlette
 load_dotenv()
 
 from src.agent.main import build_agent
-from src.agent_server import _runtime
-from src.agent_server.routes import routes
-from src.agent_server.routes.webhook import lifespan as _whatsapp_lifespan
-from src.agent_server.runs_store import RunsStore
+from src.agent_server.shared import runtime as _runtime
+from src.agent_server.shared.runs_store import RunsStore
+from src.agent_server.channels import routes
+from src.agent_server.channels.whatsapp.routes import lifespan as _whatsapp_lifespan
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -35,8 +35,9 @@ async def _lifespan(app: Starlette):
         await checkpointer.setup()
         await store.setup()
 
-        # 单独一个连接池给 threads.py 的 checkpoints 表原始 SQL 查询、runs_store
-        # 用，不复用 AsyncPostgresStore 内部管理的池（那个只服务 store 自己的方法）。
+        # 单独一个连接池给 channels/tob/{routes,admin}.py 的 checkpoints 表原始
+        # SQL 查询、runs_store 用，不复用 AsyncPostgresStore 内部管理的池（那个
+        # 只服务 store 自己的方法）。
         pool: AsyncConnectionPool = AsyncConnectionPool(DATABASE_URL, min_size=1, max_size=10, open=False)
         await pool.open()
         try:

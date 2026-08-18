@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 
@@ -75,3 +76,14 @@ class RunsStore:
 
     async def amark_cancelled(self, run_id: str) -> None:
         await self._update_status(run_id, "cancelled")
+
+    async def alist_runs_for_thread(self, thread_id: str) -> list[dict]:
+        """给 toB 查看页面用：按时间倒序列出某个 thread 的 run 记录。"""
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT run_id, status, attempt, error, created_at, updated_at "
+                    "FROM runs WHERE user_id = %s ORDER BY created_at DESC",
+                    (thread_id,),
+                )
+                return await cur.fetchall()
