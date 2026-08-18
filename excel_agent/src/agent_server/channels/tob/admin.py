@@ -15,6 +15,7 @@ attempt/失败原因/起止时间，来自 alist_runs_for_thread）、长期记�
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, ToolMessage
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
@@ -22,6 +23,21 @@ from starlette.routing import Route
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.memory import aget_memory
 from src.agent_server.shared.security import local_only
+
+
+def _serialize_message(m) -> dict:
+    entry: dict = {"role": type(m).__name__, "content": str(getattr(m, "content", m))}
+    if isinstance(m, AIMessage) and m.tool_calls:
+        entry["tool_calls"] = [
+            {"name": tc.get("name"), "args": tc.get("args"), "id": tc.get("id")}
+            for tc in m.tool_calls
+        ]
+    if isinstance(m, ToolMessage):
+        entry["tool_name"] = m.name
+        entry["tool_call_id"] = m.tool_call_id
+        if m.artifact is not None:
+            entry["artifact"] = str(m.artifact)
+    return entry
 
 
 @local_only
@@ -40,14 +56,7 @@ async def get_state(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
     snapshot = await _runtime.agent.aget_state({"configurable": {"thread_id": thread_id}})
     messages = snapshot.values.get("messages", [])
-    return JSONResponse(
-        {
-            "messages": [
-                {"role": type(m).__name__, "content": str(getattr(m, "content", m))}
-                for m in messages
-            ]
-        }
-    )
+    return JSONResponse({"messages": [_serialize_message(m) for m in messages]})
 
 
 @local_only
@@ -79,6 +88,8 @@ _ADMIN_PAGE = """<!doctype html>
   h2 { font-size: 15px; color: #555; margin: 20px 0 8px; }
   .msg { padding: 8px 10px; margin-bottom: 6px; border-radius: 6px; background: #f5f5f5; white-space: pre-wrap; }
   .msg .role { font-weight: 600; font-size: 12px; color: #888; margin-bottom: 2px; }
+  .tool-call { font-size: 12px; color: #555; margin-top: 4px; }
+  .tool-artifact { font-size: 12px; color: #a66; margin-top: 4px; font-family: monospace; }
   .memory { padding: 10px; background: #fafaf0; border: 1px solid #eee; border-radius: 6px; white-space: pre-wrap; font-size: 13px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
@@ -131,7 +142,19 @@ async function selectThread(threadId, li) {
     html += '<p class="empty">无对话记录</p>';
   } else {
     for (const m of state.messages) {
-      html += `<div class="msg"><div class="role">${escapeHtml(m.role)}</div>${escapeHtml(m.content)}</div>`;
+      let body = escapeHtml(m.content);
+      if (m.tool_calls && m.tool_calls.length > 0) {
+        body += m.tool_calls.map(tc =>
+          `<div class="tool-call">调用工具 <b>${escapeHtml(tc.name || '')}</b>(${escapeHtml(JSON.stringify(tc.args || {}))})</div>`
+        ).join('');
+      }
+      if (m.role === 'ToolMessage') {
+        body = `<div class="tool-call">工具 <b>${escapeHtml(m.tool_name || '')}</b> 返回：</div>` + body;
+        if (m.artifact) {
+          body += `<div class="tool-artifact">artifact: ${escapeHtml(m.artifact)}</div>`;
+        }
+      }
+      html += `<div class="msg"><div class="role">${escapeHtml(m.role)}</div>${body}</div>`;
     }
   }
 

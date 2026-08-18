@@ -18,6 +18,7 @@ load_dotenv()
 from src.agent.main import build_agent
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.runs_store import RunsStore
+from src.agent_server.shared.summaries_store import SummariesStore
 from src.agent_server.channels import routes
 from src.agent_server.channels.whatsapp.routes import lifespan as _whatsapp_lifespan
 
@@ -44,7 +45,10 @@ async def _lifespan(app: Starlette):
             runs_store = RunsStore(pool)
             await runs_store.setup()
 
-            _runtime.agent = build_agent(checkpointer, store)
+            summaries_store = SummariesStore(pool)
+            await summaries_store.setup()
+
+            _runtime.agent = build_agent(checkpointer, store, summaries_store)
             _runtime.store = store
             _runtime.runs_store = runs_store
             _runtime.pool = pool

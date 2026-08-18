@@ -18,6 +18,7 @@ from langgraph.runtime import Runtime
 from deepagents import create_deep_agent, FilesystemPermission
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
+from src.agent.middleware.conversation_summary import ConversationSummaryAuditMiddleware
 from src.context import ContextSchema
 from src.agent.tools.excel_tools import (
     aggregate_excel_sheet,
@@ -174,8 +175,8 @@ async def topic_gate(
 # - AsyncPostgresSaver 构造时要求已经有一个运行中的事件循环（内部会调用
 #   asyncio.get_running_loop()）。本模块在 uvicorn 事件循环启动之前就被
 #   import，所以这里不能直接构造 checkpointer，只能提供 build_agent(checkpointer,
-#   store) 工厂函数，交给 src/agent_server/__init__.py 的 Starlette lifespan
-#   （此时事件循环已经在跑）构造好之后再传进来。
+#   store, summaries_store) 工厂函数，交给 src/agent_server/__init__.py 的
+#   Starlette lifespan（此时事件循环已经在跑）构造好之后再传进来。
 # - 增长问题：deepagents 的 DeepAgentState 已经给 messages 字段配了
 #   DeltaChannel（见 deepagents/graph.py），每一步存的是增量而不是全量快照
 #   （每 50 步才存一次完整快照），把 checkpoint 存储量从 O(对话轮数²) 降到了
@@ -184,9 +185,16 @@ async def topic_gate(
 #   版本里没有任何 checkpointer 实现它（包括 InMemorySaver），且其文档明确警告
 #   对使用 DeltaChannel 的图做朴素裁剪会悄悄弄断历史链、丢数据——所以这里不额外
 #   加自定义的裁剪/删除逻辑，等真的遇到数据库文件过大再处理。
-def build_agent(checkpointer, store):
-    """创建 DeepAgent 实例。checkpointer、store 都由调用方（agent_server 的
-    lifespan）异步构造后传入——分别是 AsyncPostgresSaver、AsyncPostgresStore。
+# 摘要触发阈值：SummarizationMiddleware 和 ConversationSummaryAuditMiddleware
+# 共用同一个数字才能对齐节流频率（见下面 ConversationSummaryAuditMiddleware 的
+# 注释），所以提成常量，不要在两处分别写字面量。
+SUMMARY_TRIGGER_TOKENS = 4000
+
+
+def build_agent(checkpointer, store, summaries_store):
+    """创建 DeepAgent 实例。checkpointer、store、summaries_store 都由调用方
+    （agent_server 的 lifespan）异步构造后传入——分别是 AsyncPostgresSaver、
+    AsyncPostgresStore、基于同一个连接池的 SummariesStore。
 
     deepagents 内部会自动注入：
     - 任务规划中间件 (TodoListMiddleware / write_todos)
@@ -205,23 +213,35 @@ def build_agent(checkpointer, store):
             # 对一条马上要被拒答的消息做无意义的加工。
             topic_gate,
             # 例子：控制单个 thread（user_id）的上下文体量，避免陪聊越久单次调用
-            # token 越贵、最终超出模型上下文窗口。两个中间件管的是不同层面的膨胀，
-            # 按下面的顺序叠加：先精简工具结果，再对消息本身做摘要。
+            # token 越贵、最终超出模型上下文窗口。三个中间件管的是不同层面的膨胀，
+            # 按下面的顺序叠加：先精简工具结果，再做摘要审计落库，最后压缩对话本身。
             #
             # 1) ContextEditingMiddleware：只清理"工具调用的返回结果"（比如
             #    web_search 返回的长网页正文），不动对话本身。累计输入 token 超过
             #    阈值时，把较早的工具结果替换成占位符。对应 Anthropic
             #    clear_tool_uses 的思路，用默认配置即可。
             ContextEditingMiddleware(),
-            # 2) SummarizationMiddleware：管对话消息本身。累计 token 数超过
-            #    trigger 阈值时，自动把较早的消息压缩成一段摘要，保留最近 keep
-            #    条原始消息，AI/Tool 消息对不会被拆散。
-            #    trigger=("tokens", 4000)：超过 4000 token 才触发，避免正常的
-            #    短对话被频繁摘要；keep=("messages", 20)：摘要后至少保留最近
-            #    20 条原始消息。这里已经有 /memories/AGENTS.md 承担"值得长期
-            #    记住的信息"，所以原始聊天记录被摘掉不会丢失真正重要的内容。
+            # 2) ConversationSummaryAuditMiddleware：和下面的 SummarizationMiddleware
+            #    完全独立、互不调用——只是共用同一个 SUMMARY_TRIGGER_TOKENS 阈值。
+            #    达到阈值时按固定 Schema（ConversationSummarySchema）生成结构化摘要，
+            #    把"压缩前的原始消息"和"压缩后的结构化结果"一起落库（表结构见
+            #    SummariesStore），用于审计/报表；对 graph 状态本身没有任何修改。
+            #    放在 SummarizationMiddleware 之前，是为了拿到压缩前的完整消息；
+            #    因为排在前面，本轮触发后 SummarizationMiddleware 会把消息压下去，
+            #    下一轮 token 数自然回落到阈值以下，不需要额外的"已审计"标记防重复。
+            ConversationSummaryAuditMiddleware(
+                model=llm, store=summaries_store, trigger_tokens=SUMMARY_TRIGGER_TOKENS
+            ),
+            # 3) SummarizationMiddleware：管对话消息本身、喂给模型看的上下文。
+            #    累计 token 数超过 trigger 阈值时，自动把较早的消息压缩成一段
+            #    自由文本摘要，保留最近 keep 条原始消息，AI/Tool 消息对不会被
+            #    拆散。keep=("messages", 30)：摘要后至少保留最近 30 条原始
+            #    消息。这里已经有 /memories/AGENTS.md 承担"值得长期记住的
+            #    信息"，所以原始聊天记录被摘掉不会丢失真正重要的内容。
             SummarizationMiddleware(
-                model=llm, trigger=("tokens", 4000), keep=("messages", 30)
+                model=llm,
+                trigger=("tokens", SUMMARY_TRIGGER_TOKENS),
+                keep=("messages", 30),
             ),
             seed_default_memory,
             caller_prompt,

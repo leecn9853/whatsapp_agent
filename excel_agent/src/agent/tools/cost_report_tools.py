@@ -220,17 +220,16 @@ def generate_cost_report_image(
                 section_cfg = SECTIONS[section]
                 df = read_section(recalculated_path, section_cfg)
 
-                footer_text = (
-                    f"数据来源: thrid_app · 拉取时间: {fetch_time:%Y-%m-%d %H:%M:%S} · "
-                    f"月度成本 {len(monthly_rows)} 条 / 供应商采购 {len(supplier_rows)} 条 · "
-                    f"报表ID: {report_id}"
-                )
+                footer_text = f"报表ID: {report_id}"
 
                 save_path = _resolve_image_save_path(section, runtime.context)
                 if render_type == "table":
                     render_table_image(df, section_cfg, save_path, footer_text)
                 else:
                     render_chart_image(df, section_cfg, save_path, footer_text)
+
+                # 最终发给用户的图片也备份一份进快照文件夹，方便跟同一份快照 xlsx 对照。
+                shutil.copy2(save_path, snapshot_dir / save_path.name)
     except httpx.HTTPError as e:
         return (
             f"拉取成本数据失败：{e}\n"
