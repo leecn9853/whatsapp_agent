@@ -25,7 +25,7 @@ def _sse_frame(event: dict) -> str:
 
 async def _sse(thread_id: str, message: str, caller: str):
     run_id = await _runtime.runs_store.acreate_run(thread_id)
-    context = ContextSchema(caller=caller, user_id=thread_id)
+    context = ContextSchema(caller=caller, user_id=thread_id, run_id=run_id)
 
     async with _runtime.lock_for(thread_id):
         result: RunResult | None = None

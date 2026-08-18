@@ -25,7 +25,7 @@ from src.agent.tools.excel_tools import (
     inspect_excel,
     list_excel_files,
 )
-from src.agent.tools.cost_report_tools import generate_cost_report
+from src.agent.tools.cost_report_tools import generate_cost_report_image
 from src.agent.tools.save_file import save_file
 from src.agent.tools.tavily_search import web_search
 
@@ -56,12 +56,8 @@ tools = [
     inspect_excel,
     aggregate_excel_sheet,
     create_chart_sheet,
-    generate_cost_report,
+    generate_cost_report_image,
 ]
-
-# 中间件：拦截并记录每一次工具调用（横切关注点示例）
-call_count = [0]
-
 
 @dynamic_prompt
 def caller_prompt(request: ModelRequest[ContextSchema]) -> str:

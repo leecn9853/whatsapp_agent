@@ -12,3 +12,7 @@ class ContextSchema:
 
     caller: str = "debug"
     user_id: str | None = None
+    # agent_server 的 runs_store 里那条任务记录的 run_id（webhook.py/routes/runs.py
+    # 里 acreate_run() 生成后传下来）；调试（直接跑 src/agent/main.py）时没有对应的
+    # runs_store 记录，恒为 None。
+    run_id: str | None = None

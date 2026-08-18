@@ -58,7 +58,7 @@ async def process_message(user_id: str, run_id: str, body: str) -> None:
     HTTP 响应，结果和过程中的进度提示都通过 send_text/send_file 主动推送。
     """
     async with _runtime.lock_for(user_id), httpx.AsyncClient(timeout=60) as client:
-        context = ContextSchema(caller="whatsapp", user_id=user_id)
+        context = ContextSchema(caller="whatsapp", user_id=user_id, run_id=run_id)
         notice_task = asyncio.create_task(_notify_if_slow(client, user_id))
 
         result: RunResult | None = None

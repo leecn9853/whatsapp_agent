@@ -21,6 +21,7 @@ wheels/
 # agent generated files
 input/
 output/
+snapshots/
 
 # local SQLite persistence (checkpointer + store)
 data/
