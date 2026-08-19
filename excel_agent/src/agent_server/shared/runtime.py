@@ -14,6 +14,7 @@ from typing import Any
 agent: Any = None
 store: Any = None
 runs_store: Any = None
+summaries_store: Any = None
 pool: Any = None
 
 # 同一个 thread_id 的 run 必须串行（并发写同一 thread 的 checkpoint 行为未定义），

@@ -5,39 +5,29 @@
 toB 鉴权）。
 
 页面本身是纯静态 HTML + fetch，不引入任何前端框架/构建步骤：列表页显示全部 thread，
-点进详情页分三块——对话历史（复用 aget_state 拿到的 messages）、run 记录（状态/
-attempt/失败原因/起止时间，来自 alist_runs_for_thread）、长期记忆（/memories/ 写入
-的 AGENTS.md 内容，来自 shared/memory.py 的 aget_memory）。这个查记忆的能力原来是
-顶层通用调试接口 /v1/memories*，现在收进 toB 的查看页面——WhatsApp 没有界面消费这
-个数据，不需要单独开路由；toC 以后要给用户自己看记忆的话，应该复用 shared/memory.py，
-不要重新拼 namespace escaping 规则。
+点进详情页分四块——对话历史（复用 aget_state 拿到的 messages，超长时容器内滚动，
+不撑爆整页）、摘要记录（ConversationSummaryAuditMiddleware 触发压缩时落库的结构化
+摘要，来自 shared/summaries_store.py 的 alist_summaries_for_thread，没有触发过就
+不显示）、run 记录（状态/attempt/失败原因/起止时间，来自 alist_runs_for_thread）、
+长期记忆（/memories/ 写入的 AGENTS.md 内容，来自 shared/memory.py 的 aget_memory）。
+这个查记忆的能力原来是顶层通用调试接口 /v1/memories*，现在收进 toB 的查看页面——
+WhatsApp 没有界面消费这个数据，不需要单独开路由；toC 以后要给用户自己看记忆的话，
+应该复用 shared/memory.py，不要重新拼 namespace escaping 规则。
+
+messages 的序列化逻辑（含 tool_calls/artifact）放在 shared/messages.py，routes.py
+的对外 state 接口复用同一份，避免两处字段定义分叉。
 """
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, ToolMessage
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.memory import aget_memory
+from src.agent_server.shared.messages import serialize_message
 from src.agent_server.shared.security import local_only
-
-
-def _serialize_message(m) -> dict:
-    entry: dict = {"role": type(m).__name__, "content": str(getattr(m, "content", m))}
-    if isinstance(m, AIMessage) and m.tool_calls:
-        entry["tool_calls"] = [
-            {"name": tc.get("name"), "args": tc.get("args"), "id": tc.get("id")}
-            for tc in m.tool_calls
-        ]
-    if isinstance(m, ToolMessage):
-        entry["tool_name"] = m.name
-        entry["tool_call_id"] = m.tool_call_id
-        if m.artifact is not None:
-            entry["artifact"] = str(m.artifact)
-    return entry
 
 
 @local_only
@@ -56,7 +46,7 @@ async def get_state(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
     snapshot = await _runtime.agent.aget_state({"configurable": {"thread_id": thread_id}})
     messages = snapshot.values.get("messages", [])
-    return JSONResponse({"messages": [_serialize_message(m) for m in messages]})
+    return JSONResponse({"messages": [serialize_message(m) for m in messages]})
 
 
 @local_only
@@ -73,6 +63,13 @@ async def get_memory(request: Request) -> JSONResponse:
     return JSONResponse({"content": content})
 
 
+@local_only
+async def get_summaries(request: Request) -> JSONResponse:
+    thread_id = request.path_params["thread_id"]
+    summaries = await _runtime.summaries_store.alist_summaries_for_thread(thread_id)
+    return JSONResponse(summaries)
+
+
 _ADMIN_PAGE = """<!doctype html>
 <html lang="zh">
 <head>
@@ -86,11 +83,16 @@ _ADMIN_PAGE = """<!doctype html>
   #list li:hover, #list li.active { background: #f0f4ff; }
   #detail { flex: 1; overflow-y: auto; padding: 16px 24px; }
   h2 { font-size: 15px; color: #555; margin: 20px 0 8px; }
+  #history { max-height: 420px; overflow-y: auto; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
   .msg { padding: 8px 10px; margin-bottom: 6px; border-radius: 6px; background: #f5f5f5; white-space: pre-wrap; }
   .msg .role { font-weight: 600; font-size: 12px; color: #888; margin-bottom: 2px; }
   .tool-call { font-size: 12px; color: #555; margin-top: 4px; }
   .tool-artifact { font-size: 12px; color: #a66; margin-top: 4px; font-family: monospace; }
   .memory { padding: 10px; background: #fafaf0; border: 1px solid #eee; border-radius: 6px; white-space: pre-wrap; font-size: 13px; }
+  .summary-card { padding: 10px; background: #f0f8ff; border: 1px solid #dce8f5; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
+  .summary-card dt { font-weight: 600; color: #567; margin-top: 6px; }
+  .summary-card dt:first-child { margin-top: 0; }
+  .summary-card dd { margin: 2px 0 0 0; white-space: pre-wrap; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
   th { background: #fafafa; }
@@ -128,19 +130,22 @@ async function selectThread(threadId, li) {
   const detail = document.getElementById('detail');
   detail.innerHTML = '<p class="empty">加载中…</p>';
 
-  const [stateRes, runsRes, memoryRes] = await Promise.all([
+  const [stateRes, runsRes, memoryRes, summariesRes] = await Promise.all([
     fetch(`/v1/tob/admin/threads/${encodeURIComponent(threadId)}/state`),
     fetch(`/v1/tob/admin/threads/${encodeURIComponent(threadId)}/runs`),
     fetch(`/v1/tob/admin/threads/${encodeURIComponent(threadId)}/memory`),
+    fetch(`/v1/tob/admin/threads/${encodeURIComponent(threadId)}/summaries`),
   ]);
   const state = await stateRes.json();
   const runs = await runsRes.json();
   const memory = await memoryRes.json();
+  const summaries = await summariesRes.json();
 
   let html = `<h2>对话历史 — ${escapeHtml(threadId)}</h2>`;
   if (state.messages.length === 0) {
     html += '<p class="empty">无对话记录</p>';
   } else {
+    html += '<div id="history">';
     for (const m of state.messages) {
       let body = escapeHtml(m.content);
       if (m.tool_calls && m.tool_calls.length > 0) {
@@ -155,6 +160,21 @@ async function selectThread(threadId, li) {
         }
       }
       html += `<div class="msg"><div class="role">${escapeHtml(m.role)}</div>${body}</div>`;
+    }
+    html += '</div>';
+  }
+
+  if (summaries.length > 0) {
+    html += '<h2>摘要记录</h2>';
+    for (const s of summaries) {
+      html += '<div class="summary-card"><dl>' +
+        `<dt>会话意图</dt><dd>${escapeHtml(s.session_intent || '')}</dd>` +
+        `<dt>涉及表格</dt><dd>${escapeHtml((s.excel_context || []).join('、') || '（无）')}</dd>` +
+        `<dt>已确定的结论/偏好</dt><dd>${escapeHtml((s.decisions || []).join('\\n') || '（无）')}</dd>` +
+        `<dt>待完成事项</dt><dd>${escapeHtml((s.next_steps || []).join('\\n') || '（无）')}</dd>` +
+        `<dt>生成/引用的文件</dt><dd>${escapeHtml((s.artifacts || []).join('\\n') || '（无）')}</dd>` +
+        `<dt>触发时 token 数 / 时间</dt><dd>${s.token_count_before} / ${escapeHtml(s.created_at)}</dd>` +
+        '</dl></div>';
     }
   }
 
@@ -197,4 +217,5 @@ routes = [
     Route("/v1/tob/admin/threads/{thread_id}/state", get_state),
     Route("/v1/tob/admin/threads/{thread_id}/runs", get_runs),
     Route("/v1/tob/admin/threads/{thread_id}/memory", get_memory),
+    Route("/v1/tob/admin/threads/{thread_id}/summaries", get_summaries),
 ]

@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 if TYPE_CHECKING:
@@ -80,3 +81,17 @@ class SummariesStore:
                 ),
             )
         return summary_id
+
+    async def alist_summaries_for_thread(self, thread_id: str) -> list[dict[str, Any]]:
+        """给 toB 查看页面用：按时间倒序列出某个 thread 触发过的摘要审计记录。
+        不选 raw_messages——那是压缩前的原始消息全量转储，查看页面只需要摘要本身。
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT id, token_count_before, session_intent, excel_context, "
+                    "decisions, next_steps, artifacts, created_at "
+                    "FROM conversation_summaries WHERE thread_id = %s ORDER BY created_at DESC",
+                    (thread_id,),
+                )
+                return await cur.fetchall()

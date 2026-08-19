@@ -24,6 +24,7 @@ from starlette.routing import Route
 from src.context import ContextSchema
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.engine import RunFailed, RunResult, run_agent_turn
+from src.agent_server.shared.messages import serialize_message
 from src.agent_server.shared.thread_ids import tob_thread_id
 from src.agent_server.shared.security import local_only
 
@@ -85,14 +86,7 @@ async def get_state(request: Request) -> JSONResponse:
     thread_id = tob_thread_id(external_id)
     snapshot = await _runtime.agent.aget_state({"configurable": {"thread_id": thread_id}})
     messages = snapshot.values.get("messages", [])
-    return JSONResponse(
-        {
-            "messages": [
-                {"role": type(m).__name__, "content": str(getattr(m, "content", m))}
-                for m in messages
-            ]
-        }
-    )
+    return JSONResponse({"messages": [serialize_message(m) for m in messages]})
 
 
 @local_only

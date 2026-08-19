@@ -23,14 +23,14 @@ import openpyxl
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
+from src.context import ContextSchema
 from src.agent.tools._cost_report_render import (
     CostReportRenderError,
-    read_section,
     recalculate_with_libreoffice,
-    render_chart_image,
-    render_table_image,
+    render_chart_screenshot,
+    render_dashboard_screenshot,
 )
-from src.agent.tools._naming import build_stem
+from src.agent.tools._naming import build_stem, sanitize_user_id
 from src.agent.tools.excel_tools import OUTPUT_DIR, _user_dir
 
 THIRD_APP_BASE_URL = os.getenv("THIRD_APP_BASE_URL", "http://127.0.0.1:8800")
@@ -38,11 +38,11 @@ THIRD_APP_BASE_URL = os.getenv("THIRD_APP_BASE_URL", "http://127.0.0.1:8800")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TEMPLATE_PATH = _PROJECT_ROOT / "templates" / "cost_report.xlsx"
 
-# LibreOffice 重算后的完整 xlsx 快照（三个看板区块全都在里面，不止当次画的那个 section），
-# 按「任务」（agent_server runs_store 的 run_id）分文件夹存放，供追溯某张图片的数字出处；
-# 不通过任何 @tool 暴露给 LLM。留存/清理由后续维护人员自行编写脚本处理，这里不做任何
-# 自动过期删除。
-SNAPSHOT_DIR = _PROJECT_ROOT / "snapshots" / "cost_report"
+# LibreOffice 重算后的完整 xlsx 快照（三个看板区块全都在里面，不止当次画的那个 section）+
+# 最终发给用户的图片备份，按「用户」再按「任务」（agent_server runs_store 的 run_id）分两级
+# 文件夹存放，供追溯某张图片的数字出处；不通过任何 @tool 暴露给 LLM。留存/清理由后续维护
+# 人员自行编写脚本处理，这里不做任何自动过期删除。
+SNAPSHOT_DIR = _PROJECT_ROOT / "snapshots"
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 # files.py 用这个集合判断哪些工具调用产生的文件需要自动发给用户（返回值是文件路径）。
@@ -162,9 +162,9 @@ def _build_filled_workbook(client: httpx.Client, dest_path: Path) -> tuple[list[
     return monthly_rows, supplier_rows
 
 
-def _resolve_image_save_path(section: str, ctx) -> Path:
+def _resolve_image_save_path(render_type: str, ctx) -> Path:
     user_output_dir = _user_dir(OUTPUT_DIR, ctx)
-    stem = build_stem(f"成本报表_{section}", ctx)
+    stem = build_stem(f"成本报表_{render_type}", ctx)
     candidate = user_output_dir / f"{stem}.png"
     n = 1
     while candidate.exists():
@@ -173,25 +173,41 @@ def _resolve_image_save_path(section: str, ctx) -> Path:
     return candidate
 
 
+def _snapshot_user_folder(ctx) -> str:
+    """快照按用户分文件夹，比如 whatsapp_85251750935；调试没有 user_id 时就叫 debug。
+
+    user_id 本身已经带渠道前缀（见 thread_ids.py 的 whatsapp_thread_id/tob_thread_id，
+    格式是 "whatsapp:<手机号>"/"tob:<external_id>"），sanitize_user_id 把冒号转成下划线后
+    就已经是 "whatsapp_85251750935" 这种形式了——这里不能再拼一次 caller，否则会变成
+    "whatsapp_whatsapp_85251750935" 这种重复前缀。
+    """
+    user_id = ctx.user_id if ctx else None
+    if user_id:
+        return sanitize_user_id(user_id)
+    return ctx.caller if ctx else "debug"
+
+
 @tool(response_format="content_and_artifact")
 def generate_cost_report_image(
-    runtime: ToolRuntime,
-    section: Literal["monthly_trend", "department_budget", "purchase_category"] = "monthly_trend",
-    render_type: Literal["table", "chart"] = "table",
+    runtime: ToolRuntime[ContextSchema],
+    render_type: Literal["table", "chart"] = "chart",
 ) -> tuple[str, str | None]:
     """从模拟第三方数据服务拉取最新的月度成本明细和供应商采购数据，生成一张成本报表图片。
 
     内部会拉最新数据填进成本报表模板，用 LibreOffice 重算模板里的汇总公式，再把「成本分析看板」
-    里对应的区块画成图片——不会生成或发送 Excel 文件给用户，只返回一张 PNG 图片。
+    /「成本图表」sheet 整体原样截图成图片——不会生成或发送 Excel 文件给用户，只返回一张 PNG
+    图片；图片保留的是 Excel/LibreOffice 原生的排版和图表配色，不是重新画的。两种 render_type
+    截的都是整张 sheet（月度趋势/部门预算/采购类别 3 个维度一起），不支持只截某一个维度。
 
     参数:
-        section: 想看哪个维度的成本汇总。
-            - monthly_trend（默认）：按月份看总支出/总预算/预算执行率/超支情况的趋势。
-            - department_budget：按部门看年度总成本 vs 年度预算的执行对比。
-            - purchase_category：按采购类别看供应商采购总额 vs 明细记录总额的对比。
-            不确定用户想看哪个维度时用默认值 monthly_trend。
-        render_type: 图片形式，默认 table（数据表格图，含合计/平均行，信息最全）；用户明确要
-            "图表""趋势图""柱状图"之类的可视化效果时才传 chart（不含合计行，画折线图/柱状图）。
+        render_type: 图片形式，两种都是 Excel 原样截图（不是重新排版画的图），且都是整张
+            sheet 一起截，不按维度拆开。
+            - chart（默认）：模板「成本图表」sheet 整体截图，一张图里包含月度趋势/部门预算/
+              采购类别 3 个原生 Excel 图表（保留原生配色/图例/坐标轴），信息最直观，不确定要
+              哪种形式时用这个。
+            - table：「成本分析看板」sheet 整体截图（保留原生边框/底色/合并单元格，3 个维度
+              各自的表格+合计/平均行都在一张图里），用户明确要"表格""明细数据""合计"之类的
+              具体数字时才传这个。
 
     仅当用户明确要生成/查看成本报表（表格或图表）时才调用。
     """
@@ -212,21 +228,20 @@ def generate_cost_report_image(
                 outdir.mkdir()
                 recalculated_path = recalculate_with_libreoffice(filled_path, outdir, profile_dir)
 
-                snapshot_dir = SNAPSHOT_DIR / report_id
+                snapshot_dir = SNAPSHOT_DIR / _snapshot_user_folder(runtime.context) / report_id
                 snapshot_dir.mkdir(parents=True, exist_ok=True)
-                snapshot_name = f"{section}_{render_type}_{fetch_time:%H%M%S%f}.xlsx"
+                snapshot_name = f"{render_type}_{fetch_time:%H%M%S%f}.xlsx"
                 shutil.copy2(recalculated_path, snapshot_dir / snapshot_name)
 
-                section_cfg = SECTIONS[section]
-                df = read_section(recalculated_path, section_cfg)
-
                 footer_text = f"报表ID: {report_id}"
+                save_path = _resolve_image_save_path(render_type, runtime.context)
 
-                save_path = _resolve_image_save_path(section, runtime.context)
                 if render_type == "table":
-                    render_table_image(df, section_cfg, save_path, footer_text)
+                    render_dashboard_screenshot(
+                        recalculated_path, list(SECTIONS.values()), save_path, footer_text, tmp_root_path
+                    )
                 else:
-                    render_chart_image(df, section_cfg, save_path, footer_text)
+                    render_chart_screenshot(recalculated_path, save_path, footer_text, tmp_root_path)
 
                 # 最终发给用户的图片也备份一份进快照文件夹，方便跟同一份快照 xlsx 对照。
                 shutil.copy2(save_path, snapshot_dir / save_path.name)
@@ -239,9 +254,10 @@ def generate_cost_report_image(
     except CostReportRenderError as e:
         return (str(e), None)
 
-    kind = "表格图" if render_type == "table" else "图表图"
+    sheet_name = "成本分析看板" if render_type == "table" else "成本图表"
+    kind = "表格截图" if render_type == "table" else "图表截图"
     content = (
         f"已拉取最新的月度成本明细（{len(monthly_rows)} 条）和供应商采购数据（{len(supplier_rows)} 条），"
-        f"生成「{section_cfg['title']}」{kind}：{save_path.name}"
+        f"生成「{sheet_name}」整体{kind}：{save_path.name}"
     )
     return content, str(save_path)

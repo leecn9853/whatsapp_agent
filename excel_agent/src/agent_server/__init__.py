@@ -51,6 +51,7 @@ async def _lifespan(app: Starlette):
             _runtime.agent = build_agent(checkpointer, store, summaries_store)
             _runtime.store = store
             _runtime.runs_store = runs_store
+            _runtime.summaries_store = summaries_store
             _runtime.pool = pool
             async with _whatsapp_lifespan(app):
                 yield
