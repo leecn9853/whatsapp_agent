@@ -6,6 +6,11 @@
 场景，所以这里只暴露一个确定性的原子工具 generate_cost_report_image，内部一次性完成"拉两个
 接口 -> 填模板 -> LibreOffice 重算 -> 读看板区块 -> 画图 -> 返回 PNG"。
 
+同一个任务（同一个 report_id，即 agent_server runs_store 的 run_id）如果先后调用了 table 和
+chart 两种 render_type，第二次调用会复用第一次已经拉好、重算好的数据（见快照目录里的
+recalculated.xlsx），不会重复拉第三方接口、不会重复跑一遍 LibreOffice——保证同一个任务里两张
+图看到的是同一份数据。不同任务（不同 report_id）之间不共享，下一个任务会重新拉取最新数据。
+
 不再生成/发送 Excel 文件给用户——Excel 只是内部中间产物，最终产物是 PNG 图片。
 """
 from __future__ import annotations
@@ -13,8 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import uuid
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -25,12 +29,12 @@ from langchain_core.tools import tool
 
 from src.context import ContextSchema
 from src.agent.tools._cost_report_render import (
-    CostReportRenderError,
-    recalculate_with_libreoffice,
     render_chart_screenshot,
     render_dashboard_screenshot,
 )
-from src.agent.tools._naming import build_stem, sanitize_user_id
+from src.agent.tools._naming import build_stem
+from src.agent.tools._report_screenshot import ReportRenderError, recalculate_with_libreoffice
+from src.agent.tools._report_snapshot import resolve_snapshot_dir
 from src.agent.tools.excel_tools import OUTPUT_DIR, _user_dir
 
 THIRD_APP_BASE_URL = os.getenv("THIRD_APP_BASE_URL", "http://127.0.0.1:8800")
@@ -38,12 +42,9 @@ THIRD_APP_BASE_URL = os.getenv("THIRD_APP_BASE_URL", "http://127.0.0.1:8800")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TEMPLATE_PATH = _PROJECT_ROOT / "templates" / "cost_report.xlsx"
 
-# LibreOffice 重算后的完整 xlsx 快照（三个看板区块全都在里面，不止当次画的那个 section）+
-# 最终发给用户的图片备份，按「用户」再按「任务」（agent_server runs_store 的 run_id）分两级
-# 文件夹存放，供追溯某张图片的数字出处；不通过任何 @tool 暴露给 LLM。留存/清理由后续维护
-# 人员自行编写脚本处理，这里不做任何自动过期删除。
-SNAPSHOT_DIR = _PROJECT_ROOT / "snapshots"
-SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+# 快照目录（按用户再按任务分两级文件夹）的解析逻辑见 _report_snapshot.py（被 alipay 报表
+# 共用）。同一个任务里 table/chart 两次调用共享同一份 recalculated.xlsx（见
+# generate_cost_report_image 里的复用逻辑），不会各自留一份。
 
 # files.py 用这个集合判断哪些工具调用产生的文件需要自动发给用户（返回值是文件路径）。
 COST_REPORT_OUTPUT_TOOL_NAMES = {"generate_cost_report_image"}
@@ -162,6 +163,16 @@ def _build_filled_workbook(client: httpx.Client, dest_path: Path) -> tuple[list[
     return monthly_rows, supplier_rows
 
 
+def _count_detail_rows(recalculated_path: Path) -> tuple[int, int]:
+    """同一个任务里复用已有 recalculated.xlsx 时，跳过了重新拉接口，改从明细 sheet 数据行数
+    还原「拉到 N 条」的条数，给用户看的提示文案用（跟当次真的拉接口时口径一致）。
+    """
+    wb = openpyxl.load_workbook(recalculated_path, data_only=True)
+    monthly_count = sum(1 for row in wb[_MONTHLY_COST_SHEET].iter_rows(min_row=2, max_col=1) if row[0].value is not None)
+    supplier_count = sum(1 for row in wb[_SUPPLIER_SHEET].iter_rows(min_row=2, max_col=1) if row[0].value is not None)
+    return monthly_count, supplier_count
+
+
 def _resolve_image_save_path(render_type: str, ctx) -> Path:
     user_output_dir = _user_dir(OUTPUT_DIR, ctx)
     stem = build_stem(f"成本报表_{render_type}", ctx)
@@ -171,20 +182,6 @@ def _resolve_image_save_path(render_type: str, ctx) -> Path:
         candidate = user_output_dir / f"{stem}({n}).png"
         n += 1
     return candidate
-
-
-def _snapshot_user_folder(ctx) -> str:
-    """快照按用户分文件夹，比如 whatsapp_85251750935；调试没有 user_id 时就叫 debug。
-
-    user_id 本身已经带渠道前缀（见 thread_ids.py 的 whatsapp_thread_id/tob_thread_id，
-    格式是 "whatsapp:<手机号>"/"tob:<external_id>"），sanitize_user_id 把冒号转成下划线后
-    就已经是 "whatsapp_85251750935" 这种形式了——这里不能再拼一次 caller，否则会变成
-    "whatsapp_whatsapp_85251750935" 这种重复前缀。
-    """
-    user_id = ctx.user_id if ctx else None
-    if user_id:
-        return sanitize_user_id(user_id)
-    return ctx.caller if ctx else "debug"
 
 
 @tool(response_format="content_and_artifact")
@@ -212,52 +209,57 @@ def generate_cost_report_image(
     仅当用户明确要生成/查看成本报表（表格或图表）时才调用。
     """
     try:
-        # 优先用 agent_server runs_store 里这次任务的 run_id，方便直接跟 runs 表对上；
-        # 调试（直接跑 src/agent/main.py）时没有 runs_store 记录，本地生成一个兜底。
-        report_id = runtime.context.run_id or uuid.uuid4().hex
-        fetch_time = datetime.now()
-        with httpx.Client(timeout=30.0) as client:
-            with tempfile.TemporaryDirectory(prefix="cost_report_") as tmp_root:
-                tmp_root_path = Path(tmp_root)
-                filled_path = tmp_root_path / "filled.xlsx"
-                monthly_rows, supplier_rows = _build_filled_workbook(client, filled_path)
+        report_id, snapshot_dir = resolve_snapshot_dir(runtime.context)
+        shared_recalculated_path = snapshot_dir / "recalculated.xlsx"
+
+        with tempfile.TemporaryDirectory(prefix="cost_report_") as tmp_root:
+            tmp_root_path = Path(tmp_root)
+
+            if shared_recalculated_path.exists():
+                # 同一个任务（同一个 report_id）已经有另一次 render_type 调用拉过数据、重算
+                # 过了——直接复用那份结果，不重复拉第三方接口、不重复跑 LibreOffice，保证
+                # 同一个任务里 table/chart 两张图看到的是同一份数据。
+                recalculated_path = shared_recalculated_path
+                monthly_count, supplier_count = _count_detail_rows(recalculated_path)
+            else:
+                with httpx.Client(timeout=30.0) as client:
+                    filled_path = tmp_root_path / "filled.xlsx"
+                    monthly_rows, supplier_rows = _build_filled_workbook(client, filled_path)
+                monthly_count, supplier_count = len(monthly_rows), len(supplier_rows)
 
                 profile_dir = tmp_root_path / "lo_profile"
                 outdir = tmp_root_path / "lo_out"
                 profile_dir.mkdir()
                 outdir.mkdir()
                 recalculated_path = recalculate_with_libreoffice(filled_path, outdir, profile_dir)
+                shutil.copy2(recalculated_path, shared_recalculated_path)
 
-                snapshot_dir = SNAPSHOT_DIR / _snapshot_user_folder(runtime.context) / report_id
-                snapshot_dir.mkdir(parents=True, exist_ok=True)
-                snapshot_name = f"{render_type}_{fetch_time:%H%M%S%f}.xlsx"
-                shutil.copy2(recalculated_path, snapshot_dir / snapshot_name)
+            footer_text = f"报表ID: {report_id}"
+            save_path = _resolve_image_save_path(render_type, runtime.context)
 
-                footer_text = f"报表ID: {report_id}"
-                save_path = _resolve_image_save_path(render_type, runtime.context)
+            if render_type == "table":
+                render_dashboard_screenshot(
+                    recalculated_path, list(SECTIONS.values()), save_path, footer_text, tmp_root_path
+                )
+            else:
+                render_chart_screenshot(recalculated_path, save_path, footer_text, tmp_root_path)
 
-                if render_type == "table":
-                    render_dashboard_screenshot(
-                        recalculated_path, list(SECTIONS.values()), save_path, footer_text, tmp_root_path
-                    )
-                else:
-                    render_chart_screenshot(recalculated_path, save_path, footer_text, tmp_root_path)
-
-                # 最终发给用户的图片也备份一份进快照文件夹，方便跟同一份快照 xlsx 对照。
-                shutil.copy2(save_path, snapshot_dir / save_path.name)
+            # 最终发给用户的图片也备份一份进快照文件夹，方便跟共享的 recalculated.xlsx 对照；
+            # 两种 render_type 各自的图片都保留，只有底层数据快照是共享的那一份。
+            shutil.copy2(save_path, snapshot_dir / save_path.name)
     except httpx.HTTPError as e:
         return (
             f"拉取成本数据失败：{e}\n"
             f"请确认模拟数据服务已启动且 THIRD_APP_BASE_URL（当前为 {THIRD_APP_BASE_URL!r}）配置正确。",
             None,
         )
-    except CostReportRenderError as e:
+    except ReportRenderError as e:
         return (str(e), None)
 
     sheet_name = "成本分析看板" if render_type == "table" else "成本图表"
     kind = "表格截图" if render_type == "table" else "图表截图"
     content = (
-        f"已拉取最新的月度成本明细（{len(monthly_rows)} 条）和供应商采购数据（{len(supplier_rows)} 条），"
+        f"已拉取最新的月度成本明细（{monthly_count} 条）和供应商采购数据（{supplier_count} 条），"
         f"生成「{sheet_name}」整体{kind}：{save_path.name}"
     )
     return content, str(save_path)

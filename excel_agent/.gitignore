@@ -1,6 +1,9 @@
 # Local MCP skills config (do not commit)
 .vscode/mcp.json
 
+# Claude Code local settings
+.claude/
+
 # Python-generated files
 __pycache__/
 *.py[oc]

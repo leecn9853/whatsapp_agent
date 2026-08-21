@@ -1,9 +1,9 @@
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from faker import Faker
 
-from thrid_app.schemas import MonthlyCostRow, SupplierPurchaseRow
+from thrid_app.schemas import AlipayMatchingRecord, MonthlyCostRow, SupplierPurchaseRow
 
 _fake = Faker("zh_CN")
 
@@ -29,6 +29,41 @@ def generate_monthly_costs(count: int = 504) -> list[MonthlyCostRow]:
                 amount=amount,
                 budget=budget,
                 over_budget="是" if amount > budget else "否",
+            )
+        )
+    return rows
+
+
+_ALIPAY_CATEGORY_MAP = {
+    "总存款数据": ["api存款", "DDB存款"],
+    "接量数据": ["提款匹配接量", "DDB用户接量", "DDB商家接量", "渠道接量"],
+    "提款派发4.0": ["提款派发4.0"],
+}
+_ALIPAY_STATUSES = ["成功", "成功", "成功", "成功", "失败", "处理中"]
+_ALIPAY_FAIL_REMARKS = ["渠道超时", "余额不足", "风控拦截", "用户取消"]
+_ALIPAY_AMOUNT_BANDS = [(0, 500), (501, 2000), (2001, 10000), (10001, 30000), (30001, 80000)]
+ALIPAY_REPORT_DATE = date(2026, 8, 18)
+
+
+def generate_alipay_matching_records(count: int = 2000) -> list[AlipayMatchingRecord]:
+    rows = []
+    for i in range(count):
+        data_category = random.choice(list(_ALIPAY_CATEGORY_MAP))
+        detail_category = random.choice(_ALIPAY_CATEGORY_MAP[data_category])
+        low, high = random.choice(_ALIPAY_AMOUNT_BANDS)
+        status = random.choice(_ALIPAY_STATUSES)
+        occurred_at = datetime.combine(ALIPAY_REPORT_DATE, time.min) + timedelta(
+            seconds=random.randint(0, 86399)
+        )
+        rows.append(
+            AlipayMatchingRecord(
+                record_id=f"AP{i + 1:08d}",
+                data_category=data_category,
+                detail_category=detail_category,
+                order_amount=round(random.uniform(low, high), 2),
+                status=status,
+                occurred_at=occurred_at.isoformat(),
+                remark=random.choice(_ALIPAY_FAIL_REMARKS) if status == "失败" else None,
             )
         )
     return rows

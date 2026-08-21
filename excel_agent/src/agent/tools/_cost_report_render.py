@@ -1,11 +1,14 @@
-"""成本报表图片渲染的私有 helper：LibreOffice 重算公式、读取看板区块、生成最终图片。
+"""成本报表图片渲染的私有 helper：读取看板区块、生成最终图片。
 
 生成最终图片目前实际在用的是两条"原样截图"路径（LibreOffice 转 PDF 再用 pymupdf 渲成图片，
 保留 Excel/LibreOffice 原生的边框/底色/合并单元格/图表配色，不是重新排版画的）：
 1. render_dashboard_screenshot：截「成本分析看板」sheet 整体（3 个区块——月度趋势/部门预算/
-   采购类别——一起截，不按 section 拆；列数少的区块会被居中挪到列数最多的区块下面，而不是
-   永远贴在最左边）。
+   采购类别——一起截，不按 section 拆；所有区块统一贴左对齐，列数少的区块不会被挪到中间）。
 2. render_chart_screenshot：截「成本图表」sheet 整体（3 个原生 Excel 图表一起，不按 section 拆）。
+
+LibreOffice subprocess 调用、转 PDF、pymupdf 渲图+贴脚注这几个跟"成本报表"业务无关的通用
+原语已经搬到 _report_screenshot.py（同时被 alipay 报表复用），这里只保留成本报表专属的
+多区块布局逻辑。
 
 render_table_image / render_chart_image 是更早的实现，把区块数值读出来用 matplotlib 重新排版
 画一张表格图/图表图——样式（配色、字号）是这边代码自己控制的，跟 Excel 原本的单元格格式/图表
@@ -16,27 +19,26 @@ render_table_image / render_chart_image 是更早的实现，把区块数值读�
 """
 from __future__ import annotations
 
-import io
-import os
-import subprocess
-from copy import copy
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 
-import pymupdf  # 把 LibreOffice 转出来的 PDF 页面渲成图片
+import pymupdf  # render_chart_screenshot 用它数 PDF 页数
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import openpyxl
 import pandas as pd
-from openpyxl.styles import Alignment, Border, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
-from PIL import Image, ImageDraw, ImageFont
 
-SOFFICE_BIN = os.getenv("SOFFICE_BIN", "soffice")
+from src.agent.tools._report_screenshot import (
+    ReportRenderError,
+    convert_to_pdf,
+    render_pdf_page_with_footer,
+)
+
 _DASHBOARD_SHEET = "成本分析看板"
 _CHART_SHEET = "成本图表"
 
@@ -59,67 +61,6 @@ def _ensure_cjk_font() -> None:
     plt.rcParams["font.family"] = font_name
     plt.rcParams["axes.unicode_minus"] = False
     _font_ready = True
-
-
-class CostReportRenderError(Exception):
-    """渲染/重算阶段的内部错误，转成给 agent 看的错误文本，不抛异常中断整轮对话。"""
-
-
-def _soffice_convert(input_path: Path, outdir: Path, profile_dir: Path, fmt: str) -> Path:
-    """用 LibreOffice headless 把 input_path 转换成 fmt 格式，返回转换后文件的路径。
-
-    outdir/profile_dir 由调用方提供（调用方负责整体临时目录的生命周期与清理），每次调用要用
-    各自独立的目录，避免并发调用时抢同一份 LibreOffice 用户配置锁。recalculate_with_libreoffice
-    （fmt="xlsx"，重算公式）和 _convert_to_pdf（fmt="pdf"，配合 print_area 截图某个区块）复用
-    这一段 subprocess 调用逻辑，区别只在 --convert-to 传的格式。
-    """
-    try:
-        result = subprocess.run(
-            [
-                SOFFICE_BIN,
-                "--headless",
-                "--calc",
-                "--convert-to",
-                fmt,
-                "--outdir",
-                str(outdir),
-                str(input_path),
-                f"-env:UserInstallation=file://{profile_dir}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except FileNotFoundError as e:
-        raise CostReportRenderError(
-            "未找到 soffice 命令，请确认已安装 LibreOffice（brew install libreoffice）。"
-        ) from e
-    except subprocess.TimeoutExpired as e:
-        raise CostReportRenderError("LibreOffice 转换超时。") from e
-
-    if result.returncode != 0:
-        raise CostReportRenderError(f"LibreOffice 转换失败：{result.stderr or result.stdout}")
-
-    converted = outdir / f"{input_path.stem}.{fmt}"
-    if not converted.exists():
-        raise CostReportRenderError("LibreOffice 没有生成转换后的文件。")
-    return converted
-
-
-def recalculate_with_libreoffice(input_path: Path, outdir: Path, profile_dir: Path) -> Path:
-    """用 LibreOffice headless 重新计算 input_path 里所有公式，返回重算后文件的路径。
-
-    outdir/profile_dir 由调用方提供（调用方负责整体临时目录的生命周期与清理），每次调用要用
-    各自独立的目录，避免并发调用时抢同一份 LibreOffice 用户配置锁。
-    """
-    return _soffice_convert(input_path, outdir, profile_dir, "xlsx")
-
-
-def _convert_to_pdf(input_path: Path, outdir: Path, profile_dir: Path) -> Path:
-    """把 input_path 转成 PDF——render_section_screenshot 用来把设好 print_area 的 sheet
-    导出成「只有一页、内容正好是打印区域」的 PDF，再交给 pymupdf 渲成图片。
-    """
-    return _soffice_convert(input_path, outdir, profile_dir, "pdf")
 
 
 def read_section(recalculated_path: Path, section_cfg: dict) -> pd.DataFrame:
@@ -219,74 +160,26 @@ def _flatten_dashboard_formulas(wb, wb_values) -> None:
                 cell.value = ws_values.cell(row=cell.row, column=cell.column).value
 
 
-def _render_pdf_page_with_footer(pdf_path: Path, page_index: int, out_path: Path, footer_text: str) -> None:
-    """用 pymupdf 把 PDF 的第 page_index 页渲成高分辨率 PNG，再用 Pillow 在底部贴一条脚注
-    （跟 render_table_image/render_chart_image 的脚注视觉风格保持一致，只是画法从 matplotlib
-    换成 Pillow）。render_section_screenshot 和 render_chart_screenshot 共用。
-    """
-    doc = pymupdf.open(pdf_path)
-    pix = doc[page_index].get_pixmap(dpi=200)
-    doc.close()
-    section_img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-
-    _ensure_cjk_font()
-    footer_height = 28
-    canvas = Image.new("RGB", (section_img.width, section_img.height + footer_height), "white")
-    canvas.paste(section_img, (0, 0))
-    draw = ImageDraw.Draw(canvas)
-    font = ImageFont.truetype(str(_FONT_PATH), 16)
-    text_width = draw.textlength(footer_text, font=font)
-    draw.text(
-        ((section_img.width - text_width) / 2, section_img.height + 4),
-        footer_text,
-        font=font,
-        fill="#666666",
-    )
-    canvas.save(out_path)
-
-
-def _reset_cell_style(cell) -> None:
-    cell.value = None
-    cell.font = Font()
-    cell.fill = PatternFill()
-    cell.border = Border()
-    cell.alignment = Alignment()
-    cell.number_format = "General"
-
-
-def _move_cell(src, dest) -> None:
-    dest.value = src.value
-    dest.font = copy(src.font)
-    dest.fill = copy(src.fill)
-    dest.border = copy(src.border)
-    dest.alignment = copy(src.alignment)
-    dest.number_format = src.number_format
-
-
 def render_dashboard_screenshot(
     recalculated_path: Path, sections_cfg: list[dict], out_path: Path, footer_text: str, tmp_dir: Path
 ) -> None:
     """把「成本分析看板」sheet 整体（3 个区块——标题行到合计行，一个接一个纵向排列）原样
     截图成一张 PNG，不按区块拆开截、也不按哪个区块单独截——保留 Excel/LibreOffice 原生的
-    边框、单元格底色、合并单元格，不像 render_table_image 那样重新排版画图。
+    边框、单元格底色、合并单元格，不像 render_table_image 那样重新排版画图。所有区块统一
+    贴左对齐（跟模板本身排版一致），不做居中挪动。
 
     做法：
     1. 跟 render_chart_screenshot 一样用 _flatten_dashboard_formulas 把公式换成静态值，删掉
        「成本分析看板」外的所有 sheet，避免 #REF! 和多余的 PDF 页。
-    2. 3 个区块列数不一样（月度趋势 8 列、部门预算 4 列、采购类别 7 列），但共享同一张 sheet
-       的列宽网格——列数少的区块如果永远贴着 A 列开头，跟旁边列数最多的区块比会明显偏左，看
-       起来不居中。这里把列数比最多列数少的区块，其标题行到合计行整块内容（连同单元格格式）
-       物理搬到居中的列位置（offset = (最多列数 - 该区块列数) // 2），原列位置清空还原成默认
-       格式，避免残留边框/底色。搬移按列号从大到小处理，目标列永远比当前源列大，不会互相
-       覆盖还没读到的源列。
-    3. 每一列的列宽按「所有区块搬移后落在这一列的表头/数据/合计内容」重新算一遍（不含标题行，
-       标题行单独按各自区块的合并宽度补差额，逻辑跟之前单区块截图一致，只是窗口从「第 1 列到
-       该区块列数」变成「该区块搬移后的列区间」）。
-    4. print_area 设成从第一个区块的标题行到最后一个区块的合计行、宽度覆盖列数最多的区块；
+    2. 3 个区块列数不一样（月度趋势 8 列、部门预算 4 列、采购类别 7 列），共享同一张 sheet
+       的列宽网格，每一列的列宽按「所有区块落在这一列的表头/数据/合计内容」取最大值算一遍
+       （不含标题行，标题行单独按自己区块的合并宽度补差额，差额只加到该区块自己占的列）。
+    3. print_area 设成从第一个区块的标题行到最后一个区块的合计行、宽度覆盖列数最多的区块；
        额外打开 print_options 的 horizontalCentered/verticalCentered——fitToWidth/fitToHeight
        各自独立缩放取较小值，两个方向不一定都刚好撑满一页，居中选项能让撑不满的那个方向的
-       留白平均分布在两侧，而不是全部堆在右边/下边。
-    5. 转 PDF，取第 0 页（这份临时文件只留了「成本分析看板」一个 sheet），渲成图片贴脚注。
+       留白平均分布在两侧，而不是全部堆在右边/下边（这是打印页面级别的居中，跟区块之间的
+       左右对齐是两件事）。
+    4. 转 PDF，取第 0 页（这份临时文件只留了「成本分析看板」一个 sheet），渲成图片贴脚注。
 
     tmp_dir 由调用方提供并负责清理（跟 recalculate_with_libreoffice 的 outdir/profile_dir
     是同一套约定），这里会在它下面再建两个子目录给 LibreOffice 转 PDF 用。
@@ -315,19 +208,8 @@ def render_dashboard_screenshot(
                 "header_row": title_row + 1,
                 "total_row": cfg["total_row"],
                 "n_cols": n_cols,
-                "offset": (max_n_cols - n_cols) // 2,
             }
         )
-
-    for block in blocks:
-        offset = block["offset"]
-        if offset == 0:
-            continue
-        for row in range(block["title_row"], block["total_row"] + 1):
-            for col in range(block["n_cols"], 0, -1):
-                src = ws.cell(row=row, column=col)
-                _move_cell(src, ws.cell(row=row, column=col + offset))
-                _reset_cell_style(src)
 
     for col_idx in range(1, max_n_cols + 1):
         widths = [
@@ -342,8 +224,8 @@ def render_dashboard_screenshot(
     # 粗体字号留的余量）。注意标题用的是模板里标题单元格的实际文字（带「一、」编号和括号里的
     # 数据来源说明），不能用 cfg["title"] 那个给 matplotlib 图表用的短标题算宽度。
     for block in blocks:
-        offset, n_cols = block["offset"], block["n_cols"]
-        first_col, last_col = offset + 1, offset + n_cols
+        n_cols = block["n_cols"]
+        first_col, last_col = 1, n_cols
         actual_title = ws.cell(row=block["title_row"], column=first_col).value
         title_units = _content_width_units(actual_title) * 1.2
         total_width = sum(ws.column_dimensions[get_column_letter(c)].width for c in range(first_col, last_col + 1))
@@ -373,9 +255,9 @@ def render_dashboard_screenshot(
     pdf_profile = tmp_dir / "pdf_profile"
     pdf_outdir.mkdir(exist_ok=True)
     pdf_profile.mkdir(exist_ok=True)
-    pdf_path = _convert_to_pdf(src_path, pdf_outdir, pdf_profile)
+    pdf_path = convert_to_pdf(src_path, pdf_outdir, pdf_profile)
 
-    _render_pdf_page_with_footer(pdf_path, 0, out_path, footer_text)
+    render_pdf_page_with_footer(pdf_path, 0, out_path, footer_text)
 
 
 def render_chart_screenshot(recalculated_path: Path, out_path: Path, footer_text: str, tmp_dir: Path) -> None:
@@ -391,7 +273,10 @@ def render_chart_screenshot(recalculated_path: Path, out_path: Path, footer_text
        公式换成静态值，删掉两张看板 sheet 之外的原始明细/分类整理 sheet（图表不直接依赖它们，
        只是「成本分析看板」的公式在被删前依赖，flatten 过后就安全了）。
     2. 隐藏「成本分析看板」，只留「成本图表」可见；给一个够大的 print_area 覆盖 3 个图表
-       （默认列宽/行高下，3 个图表纵向堆叠大约占到 A2:M53，这里留够余量设成 A1:M56）。
+       （默认列宽/行高下，3 个图表纵向堆叠大约占到 A2:M53，这里留够余量设成 A1:M56）；打开
+       print_options 的 horizontalCentered/verticalCentered——fitToWidth/fitToHeight 各自
+       独立缩放取较小值，3 个图表实际占用的区域不一定刚好等于 A1:M56，留白会平均分布在
+       四周而不是全部堆在右边/下边，图表在图片里看起来居中。
     3. 转 PDF 后取最后一页，而不是固定第 0 页——「成本图表」在 workbook 里始终是最后一个
        sheet，不依赖"隐藏的 sheet 一定不会输出页面"这个不同 LibreOffice 版本可能不一致的假设，
        取最后一页更稳。
@@ -411,6 +296,8 @@ def render_chart_screenshot(recalculated_path: Path, out_path: Path, footer_text
     ws.print_area = "A1:M56"
     ws.print_options.gridLines = False
     ws.print_options.headings = False
+    ws.print_options.horizontalCentered = True
+    ws.print_options.verticalCentered = True
     ws.page_margins = PageMargins(left=0.2, right=0.2, top=0.2, bottom=0.2, header=0, footer=0)
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
@@ -424,12 +311,12 @@ def render_chart_screenshot(recalculated_path: Path, out_path: Path, footer_text
     pdf_profile = tmp_dir / "pdf_profile"
     pdf_outdir.mkdir(exist_ok=True)
     pdf_profile.mkdir(exist_ok=True)
-    pdf_path = _convert_to_pdf(src_path, pdf_outdir, pdf_profile)
+    pdf_path = convert_to_pdf(src_path, pdf_outdir, pdf_profile)
 
     doc = pymupdf.open(pdf_path)
     last_page = len(doc) - 1
     doc.close()
-    _render_pdf_page_with_footer(pdf_path, last_page, out_path, footer_text)
+    render_pdf_page_with_footer(pdf_path, last_page, out_path, footer_text)
 
 
 def render_chart_image(df: pd.DataFrame, section_cfg: dict, out_path: Path, footer_text: str) -> None:

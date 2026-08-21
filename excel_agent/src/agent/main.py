@@ -27,6 +27,7 @@ from src.agent.tools.excel_tools import (
     list_excel_files,
 )
 from src.agent.tools.cost_report_tools import generate_cost_report_image
+from src.agent.tools.alipay_report_tools import generate_alipay_matching_report
 from src.agent.tools.save_file import save_file
 from src.agent.tools.tavily_search import web_search
 
@@ -58,6 +59,7 @@ tools = [
     aggregate_excel_sheet,
     create_chart_sheet,
     generate_cost_report_image,
+    generate_alipay_matching_report,
 ]
 
 @dynamic_prompt

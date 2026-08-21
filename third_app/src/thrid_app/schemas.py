@@ -23,3 +23,21 @@ class PagedMonthlyCosts(BaseModel):
     page: int
     page_size: int
     items: list[MonthlyCostRow]
+
+
+class AlipayMatchingRecord(BaseModel):
+    record_id: str
+    data_category: str
+    detail_category: str
+    order_amount: float
+    status: str
+    occurred_at: str
+    remark: str | None = None
+
+
+class PagedAlipayMatchingRecords(BaseModel):
+    date: str
+    total: int
+    page: int
+    page_size: int
+    items: list[AlipayMatchingRecord]
