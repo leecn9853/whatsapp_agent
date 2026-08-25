@@ -12,5 +12,9 @@ def whatsapp_thread_id(phone: str) -> str:
     return f"whatsapp:{phone}"
 
 
+def whatsapp_meta_thread_id(phone: str) -> str:
+    return f"wa_meta:{phone}"
+
+
 def tob_thread_id(external_id: str) -> str:
     return f"tob:{external_id}"
