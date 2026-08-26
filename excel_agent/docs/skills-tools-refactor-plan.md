@@ -93,39 +93,19 @@ generate_cost_report_image, generate_alipay_matching_report
   `run_skill_script(skill=..., script=..., args=...)` 这个工具、传什么参数"，不是字面意义上的
   "运行这个文件"。
 
-## 方案 A：仅物理搬迁 + 精简 docstring（低风险，未采用，作对比参考）
+## 方案 A：精简 docstring（docstring 部分已实施，物理搬迁部分未做）
 
-### 改动内容
+**局限（先说结论）**：这个方案**不能有效解决"工具太多"的问题**——工具条目数量还是 8 个
+不变，只是把其中两个工具的 docstring 变薄了。价值仅限于"成本极低的即时优化"，不是"工具瘦身"
+的根本解法；技能继续增多的话，"工具列表越长"这个问题依然存在，得靠方案 B（dispatcher）或
+方案 C（沙箱）才能从"条目数量"层面真正收敛。
 
-1. 把渐进式流水线里"纯逻辑"部分迁到对应技能目录下的 `scripts/`，比如：
-   - `src/agent/tools/_cost_report_render.py` → `src/agent/skills/cost-report/scripts/render.py`
-   - `src/agent/tools/_report_screenshot.py`、`_report_snapshot.py`、`_naming.py` 中被
-     cost-report/alipay-report 共用的部分，可以放进一个共享位置（比如
-     `src/agent/skills/_shared/scripts/`），避免两个技能各拷一份。
-   - `src/agent/tools/_alipay_report_render.py` → `src/agent/skills/alipay-report/scripts/render.py`
-2. `cost_report_tools.py` / `alipay_report_tools.py` 里的 `@tool` 函数**保留原地**（还在
-   `src/agent/tools/`，因为 `main.py` 需要 import 它们注册进 `tools` 列表），只是把 import 路径
-   改成指向 `skills/*/scripts/`。
-3. 把两个 `@tool` 函数的 docstring 从现在的"参数 + 报表结构 + 常见请求映射 + 失败提示"精简到
-   只留**模型决定是否调用/怎么传参数所必需的最少信息**（比如 `generate_cost_report_image` 只
-   留 `render_type` 两个取值的一句话区分），报表结构、字段口径、失败文案说明这些"人类/模型
-   事后核对用"的内容整段移进对应 `SKILL.md`（已经是渐进式加载，不占每轮标准开销）。
-
-### 优点
-
-- 不新增任何执行面（还是普通 Python 函数调用），安全性和现在完全一致。
-- 目录结构符合 agentskills.io 规范（技能自带的脚本放在技能目录下），便于以后新增技能时照抄
-  这个结构。
-- docstring 精简是立即生效的收益：两个最重的工具 schema 直接砍掉大半篇幅。
-- 改动范围可控，主要是移动文件 + 改 import + 削减 docstring 文字，`files.py` 的
-  `COST_REPORT_OUTPUT_TOOL_NAMES` / `ALIPAY_REPORT_OUTPUT_TOOL_NAMES` 匹配逻辑完全不受影响。
-
-### 缺点 / 局限
-
-- **工具条目数量不变**（还是 8 个绑定工具），只是把其中两个变薄了——如果以后技能继续增多，
-  "工具列表越长"这个问题本身没有解决。
-- 精简 docstring 需要小心："模型决定是否调用"所需的关键判断信息（比如"仅当用户明确要生成/
-  查看报表时才调用"这类防误触发的句子）不能删,否则可能增加误调用概率。
+**状态**：docstring 精简已于 2026-08-25 完成——`generate_cost_report_image` /
+`generate_alipay_matching_report` 的 docstring 从"参数 + 报表结构 + 常见请求映射 + 失败提示"
+精简到只留模型决定是否调用/怎么传参数所必需的最少信息（防误触发句原样保留），被删掉的内容
+逐句核对过均已在对应 `SKILL.md` 里覆盖。把纯逻辑文件物理搬迁到 `skills/*/scripts/`（比如
+`_cost_report_render.py` → `skills/cost-report/scripts/render.py`）这部分没做——纯粹是目录
+整洁度问题，不影响 schema 大小，优先级低，暂不安排。
 
 ## 方案 B（已确认采用 B2）：引入受限白名单 dispatcher 工具
 
@@ -174,16 +154,61 @@ generate_cost_report_image, generate_alipay_matching_report
   （`main.py` 第 73-79 行），如果以后要给子代理也接入某个技能脚本，dispatcher 模式下要多想一步
   怎么限定子代理只能调它被允许的那个技能/脚本，避免权限一次性放开到"所有技能脚本"。
 
+## 方案 C：接入沙箱，按 deepagents 官方模式真正"执行"脚本文件（补充记录，暂不采用）
+
+### 来源
+
+LangChain/deepagents 官方文档（[deepagents/skills#sandbox-scripts](https://docs.langchain.com/oss/python/deepagents/skills#sandbox-scripts)）
+明确写了：脚本只有通过**沙箱 backend**才能被"执行"——"the agent needs access to a shell,
+which only sandbox backends provide"。没有沙箱的话，agent 对 `skills/*/scripts/*.py` 能做的
+唯一事情是当纯文本 `read_file` 读出来，读完之后想让逻辑真的跑起来仍然得靠 shell，而这条路径
+只有 `LangSmithSandbox` 之类的沙箱 backend 才提供——`LocalShellBackend`（无沙箱）不算数。这个
+结论印证了本文档 B1/B2 判断的正确性：B1 那种"无沙箱硬跑 shell"本来就不是 deepagents 设计意图
+内的用法。
+
+### 改动内容
+
+1. 引入沙箱 backend：托管方案接官方示例里的 `LangSmithSandbox`；自建方案则用 Docker/gVisor/
+   Firecracker 之类的容器隔离实现同等接口。
+2. 用 `CompositeBackend` 把 `skills/` 路由到沙箱、其余路由走现有 backend（官方示例：
+   `CompositeBackend(default=sandbox_backend, routes={"/skills/": StoreBackend(...)})`）。
+3. 加一层中间件同步文件进出沙箱：`abefore_agent` 把 skill 文件拷进沙箱容器，`after_agent` 把
+   产物（PNG/Excel）下载回持久存储，供 `files.py` 继续按现有逻辑读取。
+4. 沙箱镜像要装齐现有脚本的运行依赖（LibreOffice `soffice`、Python 环境），网络策略要专门
+   放行访问 `thrid_app`（成本报表/支付宝报表的模拟第三方接口）的出口，不能一刀切禁网。
+
+### 优点
+
+- 完整落地 deepagents/Anthropic 官方"code execution with skills"设计意图——以后如果想让模型
+  现场写代码调用/组合技能脚本（而不是只能从白名单里选），这层基建已经具备。
+- 是唯一真正"执行"文件系统里脚本文件（而不是 import 调用）的方案，概念上最贴近
+  agentskills.io 规范里"scripts/ 目录"字面意义上的用法。
+
+### 缺点 / 风险
+
+- 额外基建投入远超本文档其余方案：选型并接入沙箱服务、维护镜像依赖、设计文件进出同步中间件、
+  评估每次调用新增的容器启动延迟和资源成本——这是独立的基建决策，不建议跟其余方案的改动混在
+  一次改动里做。
+- 对当前场景收益有限：cost-report/alipay-report 是固定、确定性、经过审查的流水线，不是模型
+  现场生成的未知代码，风险面本身就小——加沙箱主要防"脚本自身 bug 炸得更彻底"，不是防"恶意
+  代码注入"。沙箱的边际安全收益要在"模型现场写任意代码"这个场景才真正体现。
+
+### 结论
+
+暂不采用。仅在以后确实需要"模型自己写代码调用/组合技能脚本"这层自由度时，才值得单独立项
+评估引入沙箱；在此之前，方案 B2 的白名单 dispatcher 已经足够覆盖当前"固定报表流水线"的场景，
+不需要为不需要的自由度支付沙箱基建成本。
+
 ## 方案对比
 
-| | 方案 A | 方案 B |
-| --- | --- | --- |
-| 是否新增执行面 | 否 | B1 是 / B2 否 |
-| 工具条目数量 | 不变（8个） | 减少（7个，且可扩展） |
-| 每轮标准 schema 体量 | 明显减小（两个最重的工具变薄） | 更小 |
-| 改动范围 | 移文件 + 改 import + 削减文字 | 新增 dispatcher + 改 files.py + 重新设计参数传递 |
-| 风险 | 低 | B1 高（安全边界）/ B2 中（架构改动面） |
-| files.py 是否要改 | 不需要 | 需要 |
+| | 方案 A | 方案 B | 方案 C |
+| --- | --- | --- | --- |
+| 是否新增执行面 | 否 | B1 是 / B2 否 | 是（沙箱内执行） |
+| 工具条目数量 | 不变（8个） | 减少（7个，且可扩展） | 视具体设计（可与 B2 结合，同样可降到 7 个左右） |
+| 每轮标准 schema 体量 | 明显减小（两个最重的工具变薄，docstring 部分已实施） | 更小 | 更小（同 B2） |
+| 改动范围 | 削减 docstring 文字（已完成）+ 移文件/改 import（未做） | 新增 dispatcher + 改 files.py + 重新设计参数传递 | 引入沙箱 backend + 文件同步中间件 + 镜像依赖 + 网络策略 |
+| 风险 | 低 | B1 高（安全边界）/ B2 中（架构改动面） | 安全边界不新增风险（脚本固定、非模型现场生成），但基建投入最大 |
+| files.py 是否要改 | 不需要 | 需要 | 需要 |
 
 ## 待定问题
 
@@ -198,5 +223,7 @@ generate_cost_report_image, generate_alipay_matching_report
 
 ## 状态
 
-方向已确认：采用方案 B2（受限白名单 dispatcher，不接 shell）。下一步进入详细实施规划
-（dispatcher 设计、文件迁移清单、`files.py` 改动、SKILL.md 补充内容）。
+方向已确认：采用方案 B2（受限白名单 dispatcher，不接 shell）。方案 A 的 docstring 精简部分
+已于 2026-08-25 落地，但明确其局限——不解决"工具条目数量"问题，只是低成本的即时优化。方案 C
+（接入沙箱）补充记录供以后参考，暂不采用。下一步进入 B2 的详细实施规划（dispatcher 设计、
+文件迁移清单、`files.py` 改动、SKILL.md 补充内容）。
