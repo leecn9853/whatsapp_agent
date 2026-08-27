@@ -1,3 +1,5 @@
+name: excel_agent
+
 services:
   postgres:
     image: postgres:17
@@ -12,6 +14,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # 阶段一：见 docs/sandbox-selfhosted-plan.md。长驻容器，DockerSandbox 通过 exec 调用它。
+  sandbox:
+    build: ./sandbox
 
 volumes:
   pgdata:

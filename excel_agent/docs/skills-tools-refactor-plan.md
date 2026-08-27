@@ -1,229 +1,171 @@
-# Tools 瘦身：把技能脚本迁入 skills/，用渐进式加载缩小上下文（规划草案，未实现）
+# Tools 瘦身 + 自建 Docker 沙箱：现状与下一步
+
+## TL;DR
+
+- **问题**：`generate_cost_report_image` / `generate_alipay_matching_report` 两个工具的
+  docstring 把对应 `SKILL.md` 已经讲过的内容（参数映射、报表结构）又重复了一遍，而
+  docstring 是标准 tool schema，每轮请求原样发送，不受 `SkillsMiddleware` 渐进式加载覆盖——
+  这是"工具太大"的主要来源。
+- **最终方向**：不自己写 dispatcher 工具。把脚本迁进 `skills/*/scripts/`，让 `DockerSandbox`
+  做 `main.py` 的默认 backend——`deepagents` 的 `FilesystemMiddleware` 检测到 backend 实现了
+  `SandboxBackendProtocol` 会**自动**加一个通用的 `execute(command: str)` 工具，模型读
+  `SKILL.md` 知道要跑什么命令后直接调 `execute` 就行，不需要我们再造一个工具。
+- **已完成**：① docstring 精简（2026-08-25）；② 沙箱基础设施本身搭好并验证通过
+  （2026-08-26，见下文"沙箱阶段一"）。
+- **未完成 / 下一步**：把沙箱接成 `main.py` 的默认 backend、脚本迁移进沙箱、`files.py` 改造、
+  网络白名单、并发隔离——这些统称"阶段二"，还没有开始，见下文"阶段二：待完成"。
 
 ## 背景
 
-当前绑定给模型的工具列表（[src/agent/main.py](../src/agent/main.py) 第 54-63 行）有 8 个：
+[src/agent/main.py](../src/agent/main.py) 绑定给模型的工具目前有 8 个：
+`web_search, save_file, list_excel_files, inspect_excel, aggregate_excel_sheet,
+create_chart_sheet, generate_cost_report_image, generate_alipay_matching_report`。
 
-```
-web_search, save_file, list_excel_files, inspect_excel,
-aggregate_excel_sheet, create_chart_sheet,
-generate_cost_report_image, generate_alipay_matching_report
-```
+其中 `generate_cost_report_image`（[cost_report_tools.py](../src/agent/tools/cost_report_tools.py)）
+和 `generate_alipay_matching_report`（[alipay_report_tools.py](../src/agent/tools/alipay_report_tools.py)）
+最重——它们是"自包含原子工具"，一次调用里包含"拉接口 → 填模板/建表 → 渲染 → 截图"整条
+流水线，docstring 原本把参数含义、报表结构、失败提示全写了一遍。
 
-每一个绑定工具的函数签名 + docstring，都会被序列化进**每一轮**发给模型的 tool schema
-里——不管这一轮任务用不用得上。逐个测了一下 docstring 长度（不含模块级 docstring，只算
-真正挂在 `@tool` 函数上的那段）：
+项目已经在用 `deepagents` 的 `SkillsMiddleware`（`main.py` 里 `skills=["./skills/"]`），
+`src/agent/skills/` 下有 `cost-report`、`alipay-report`、`excel-chart` 三个 `SKILL.md`，
+符合 [agentskills.io 规范](https://agentskills.io/specification) 的渐进式加载：系统提示里
+只放每个技能的 `name`+`description`，完整内容靠模型按需 `read_file`。矛盾点是：两个重工具的
+docstring 把 SKILL.md 已经讲过的东西又复述了一遍，这部分没享受到"按需加载"的好处。
 
-| 工具 | docstring 长度（字符） |
+`excel_tools.py` 的四个工具（`list_excel_files`/`inspect_excel`/`aggregate_excel_sheet`/
+`create_chart_sheet`）不在讨论范围内：它们是通用组合式原子操作，不是某个技能专属的
+"一次性脚本"。
+
+## 已确认的方案：自建沙箱 + 框架自带的 `execute` 工具（原方案 B、C 的合并结论，已放弃自造 dispatcher）
+
+论证过程（完整版见 git 历史）浓缩成三条：
+
+1. Anthropic 官方（[Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)）
+   把"工具太多、上下文太大"当作要解决的问题，方案是"更少通用工具 + 细节按需从文件系统加载"。
+2. 官方版本的执行环境是**沙箱**，不是裸机 shell（Claude Skills 依赖 "Code Execution Tool
+   beta"）。项目现成能拿到的 `deepagents.LocalShellBackend` 官方文档明确写"无沙箱、直接在
+   宿主机跑，不建议处理不可信输入"——这个 agent 直接对接 WhatsApp 真实用户消息，不能走这条路
+   （对应原方案 B1，已否决）。
+3. `deepagents` 官方文档（[deepagents/skills#sandbox-scripts](https://docs.langchain.com/oss/python/deepagents/skills#sandbox-scripts)）
+   写明：脚本只有通过**沙箱 backend**才能被"执行"。而且不需要我们自己搭一个转发工具——读
+   `deepagents` 源码确认，`FilesystemMiddleware` 会在 backend 实现
+   `SandboxBackendProtocol` 时**自动**加一个通用 `execute(command: str)` 工具
+   （[filesystem.py:1566-1568](../.venv/lib/python3.14/site-packages/deepagents/middleware/filesystem.py#L1566-L1568)）。
+   模型读 `SKILL.md` 知道该跑什么命令，直接调框架自带的 `execute` 就行——原计划里的
+   `run_skill_script` dispatcher 是重复造轮子，已放弃。
+
+**结论**：脚本迁进 `skills/*/scripts/`，`DockerSandbox` 作为 `main.py` 的默认 backend，靠
+框架自带的 `execute` 工具跑脚本，不新增任何自定义工具。分两个阶段落地：
+
+- **阶段一**：只搭建并验证沙箱基础设施本身，不改动任何现有生产代码路径。**已完成。**
+- **阶段二**：把沙箱接成默认 backend + 脚本迁移 + `files.py` 改造。**未开始。**
+
+**接线细节**：`supports_execution()` 对 `CompositeBackend` 只看 `backend.default` 是不是
+沙箱（[filesystem.py:1458-1459](../.venv/lib/python3.14/site-packages/deepagents/middleware/filesystem.py#L1458-L1459)）。
+现在 `main.py` 是 `CompositeBackend(default=fs_backend, routes={"/memories/": ...})`，要让
+`execute` 工具出现，必须让沙箱是 `default`，原来"其余不变、只加 `/skills/` 路由"的设想要反过来
+——沙箱做默认、把非沙箱的东西（比如 `/memories/`）路由出去。这个反转具体怎么落地是阶段二要
+解决的问题。
+
+## 已完成：方案 A，docstring 精简（2026-08-25）
+
+`generate_cost_report_image` / `generate_alipay_matching_report` 的 docstring 从"参数完整
+解释 + 报表结构 + 失败提示"精简到只留"决定是否调用/怎么传参"必需的最少信息（防误触发句
+原样保留）。被删掉的内容逐句核对过均已在对应 `SKILL.md` 里覆盖（`alipay-report/SKILL.md`
+补了一句表头列名，是唯一发现的缺口）。
+
+**局限**：不解决"工具条目数量"问题——8 个工具还是 8 个，只是两个最重的变薄了。真正收敛
+数量要靠阶段二把这两个工具换成框架自带的 `execute`。
+
+## 已完成：沙箱阶段一（2026-08-26）
+
+搭建并验证了沙箱基础设施本身（容器、`BaseSandbox` 子类、网络连通性），**没有**接入任何现有
+生产代码路径——`DockerSandbox` 还没被 `main.py` 的 `backend=` 使用，纯粹是独立验证过的新增
+文件，随时可以整体删掉回退。
+
+### 架构决策（供阶段二复用，未来若要改再回来改这里）
+
+- **docker-py SDK，不用 shell 出去调 `docker` CLI**：直接对接 daemon API，异常类型
+  （`docker.errors.APIError`）比解析 CLI stderr 更容易做结构化错误处理，跟 `BaseSandbox`
+  "upload/download 要把错误装进 response 字段而不是抛异常"的契约更好对接。
+- **单个长驻容器，不做池化**：`docker compose up -d sandbox` 启动时用
+  `CMD ["sleep", "infinity"]` 保持存活，`execute()` 每次对同一容器 `exec_run`。阶段一只验证
+  机制能不能跑通，不验证生产并发安全——多用户并发写冲突的隔离设计留给阶段二。
+- **网络**：默认桥接网络 + `host.docker.internal`（Docker Desktop 自动注入，Mac 上不需要
+  `extra_hosts` 配置）。出口没有做白名单，能访问外网+宿主机，不做限制——这是阶段二接入生产
+  流量前需要单独做的加固项。
+- **代码落点**：`src/agent/backends/docker_sandbox.py` 新增 `DockerSandbox(BaseSandbox)`，
+  不改 `main.py`，保证阶段一纯增量。
+
+### 实现与验证结果
+
+- 新增依赖：`docker>=7.1.0`（实装 `docker==7.2.0`），`pyproject.toml` + `uv sync`。
+- [sandbox/Dockerfile](../sandbox/Dockerfile)：`python:3.14-slim` 最小镜像，仅装 curl；
+  阶段二迁移脚本时需要加 LibreOffice（`soffice`）+ 项目 Python 依赖。
+- [docker-compose.yml](../docker-compose.yml)：新增 `sandbox` service，容器名
+  `excel_agent-sandbox-1`（compose 项目名 `excel_agent` + service 名 `sandbox` 的默认命名）。
+- [src/agent/backends/docker_sandbox.py](../src/agent/backends/docker_sandbox.py)：
+  `DockerSandbox(BaseSandbox)` 实现 `execute`/`upload_files`/`download_files`/`id`。
+- [sandbox/smoke_test.py](../sandbox/smoke_test.py)：手动验证脚本（不接入 CI）。运行方式：
+  ```
+  docker compose up -d sandbox
+  uv run python -m sandbox.smoke_test
+  ```
+  （直接 `python sandbox/smoke_test.py` 会因为脚本目录被加进 `sys.path[0]` 而找不到 `src`
+  包，必须用 `-m` 从仓库根目录跑。）
+- third_app（成本报表/支付宝报表用的模拟第三方接口）服务端代码已搬到仓库外
+  `/Users/CoderYing/Projects/whatsapp_agent/third_app`，`main.py` 绑
+  `host="0.0.0.0", port=8800`，沙箱容器通过 `host.docker.internal:8800` 直连，`/docs`
+  返回 `200`——网络连通性已用真实地址验证过，不是临时测试端口。
+- 三条验证全部通过：`execute` 拿到 `Python 3.14.7`/`exit_code=0`；upload/download 往返内容
+  一致；网络连通 third_app 返回 `200`。
+- 性能：单次 `exec_run` ~0.033s，容器冷启动（`stop`→`up`→能 `exec`）~0.59s——都很小，阶段二
+  沿用单容器不池化没有明显性能问题；真正瓶颈预期在阶段二接入 LibreOffice/`soffice` 调用之后，
+  需要单独测。
+
+## 阶段二：待完成（尚未开始）
+
+1. 把两个工具的完整流水线逻辑迁移成沙箱内可执行的脚本
+   （`skills/cost-report/scripts/generate.py`、`skills/alipay-report/scripts/generate.py`），
+   镜像加装 LibreOffice + 项目 Python 依赖（`openpyxl`/`httpx` 等）。
+2. 删掉 `generate_cost_report_image` / `generate_alipay_matching_report` 两个绑定工具；把
+   `DockerSandbox` 接成 `main.py` 里 `CompositeBackend` 的 `default`（现在是 `fs_backend`），
+   让框架自动加上 `execute` 工具。工具数 8 → 7（`execute` 是框架自带的，不用我们再写）。
+3. 原来 `default=fs_backend` 承担的东西（普通文件系统读写）和 `/memories/` 路由怎么摆——
+   沙箱做 `default` 之后，非沙箱场景的路由方式需要重新设计（哪些路径继续走 `fs_backend`，
+   哪些走沙箱）。
+4. `execute` 工具运行在沙箱容器的文件系统里，跟宿主机/`fs_backend` 的路径不是同一套——
+   `SKILL.md` 里怎么告诉模型脚本的调用命令、脚本文件本身怎么进沙箱（是打进镜像还是靠
+   `upload_files` 同步）要定下来。
+5. **文件输出检测机制要重新设计**：原来 `files.py` 的 `FILE_OUTPUT_TOOL_NAMES` 靠工具名
+   （`generate_cost_report_image` 等）匹配 `ToolMessage.name` 来判断"要不要自动发文件"。
+   换成通用 `execute` 之后工具名永远是 `execute`，这条路径完全失效，而且 `execute` 的
+   `ExecuteArtifact`（[protocol.py:800-817](../.venv/lib/python3.14/site-packages/deepagents/backends/protocol.py#L800-L817)）
+   只带 `exit_code`，不带产物路径信息——需要新想一个机制（比如脚本按约定把输出路径打印到
+   stdout，或者模型跑完 `execute` 后自己再调 `download_files`/`save_file` 把产物取出来）。
+   这是从"自造 dispatcher"换成"框架自带 execute"之后新增的一个待解决问题，之前 dispatcher
+   方案下可以用结构化返回值绕开，现在绕不开了。
+6. `runtime.context`（`report_id`/`user_id` 等）怎么传给沙箱里的脚本——现在两个 `@tool`
+   函数靠 `ToolRuntime[ContextSchema]` 自动注入，`execute` 是纯 shell 命令，参数只能靠命令行
+   参数/环境变量传，注入路径要重新设计。
+7. 出口网络白名单：阶段一确认了默认桥接网络能直连 third_app，阶段二决定要不要收紧到"只放行
+   third_app，阻断其余出网"。
+8. 并发场景下的容器隔离/池化设计：同一时间多个 WhatsApp 用户各自生成报表，互不干扰（阶段一
+   只有一个长驻容器，没考虑这个）。
+9. 子代理权限限定：`web-search-agent` 等子代理（`main.py` 里用"传入具体工具列表"的方式）以后
+   如果要接入沙箱，`execute` 是完全通用的 shell 工具，没有天然的"只能跑某个技能脚本"限制，
+   要单独设计怎么限定子代理不会被开放到任意命令执行。
+
+## 关键文件
+
+| 文件 | 状态 |
 | --- | --- |
-| `generate_cost_report_image`（[cost_report_tools.py](../src/agent/tools/cost_report_tools.py)） | ~700 |
-| `generate_alipay_matching_report`（[alipay_report_tools.py](../src/agent/tools/alipay_report_tools.py)） | ~760 |
-| `inspect_excel` / `aggregate_excel_sheet` / `create_chart_sheet`（[excel_tools.py](../src/agent/tools/excel_tools.py)） | 各 ~200-500 |
-| `save_file` | ~220 |
-
-`generate_cost_report_image` 和 `generate_alipay_matching_report` 这两个最重——因为它们是
-"自包含原子工具"：一次调用里包含"拉接口 → 填模板/建表 → 渲染 → 截图"整条流水线，docstring
-里把参数含义、报表结构、失败提示全写了一遍，供模型在**决定要不要调用**和**怎么传参**时看。
-
-同时，项目已经在用 `deepagents` 的 `SkillsMiddleware`（`main.py` 第 252 行
-`skills=["./skills/"]`），`src/agent/skills/` 下已有 `cost-report`、`alipay-report`、
-`excel-chart` 三个 `SKILL.md`，符合 [agentskills.io 规范](https://agentskills.io/specification)
-的渐进式加载：系统提示里只放每个技能的 `name` + `description`（几十字），完整内容要模型自己
-`read_file` 按需读取（见 `deepagents/middleware/skills.py` 里的 `SKILLS_SYSTEM_PROMPT`）。
-
-**矛盾点**：SKILL.md 本身已经渐进式加载了，但 `generate_cost_report_image` /
-`generate_alipay_matching_report` 这两个工具的 docstring 里又把 SKILL.md 已经讲过的东西
-（参数映射、报表结构、失败文案）重复了一遍——这部分是**标准工具 schema**，不受渐进式加载
-覆盖，每轮请求原样发送，没有享受到"按需"的好处。这是当前"tools 太大"的主要来源。
-
-`excel_tools.py` 的四个工具（`list_excel_files` / `inspect_excel` / `aggregate_excel_sheet` /
-`create_chart_sheet`）不在这次讨论范围内：它们是通用组合式原子操作（读表结构、聚合、画图各自
-独立，被上层按需链式调用），不是某个技能专属的"一次性脚本"，硬塞进某个 `skills/*/scripts/`
-里并不合适。
-
-## 目标
-
-在不牺牲现有功能/产物契约（[files.py](../src/agent_server/shared/files.py) 靠工具名匹配
-`response_format="content_and_artifact"` 自动把生成的图片发给用户这条逻辑）的前提下，减少
-`cost-report`、`alipay-report` 这两个技能在**每轮请求的标准 tool schema**里占用的体量。
-
-## 官方依据：这么做符不符合最佳实践
-
-查了 agentskills.io 规范原文和 Anthropic 官方工程博客，三点结论：
-
-1. **规范本身不规定 `scripts/` 怎么被执行**。[agentskills.io/specification](https://agentskills.io/specification)
-   原文：`scripts/`: "Contains executable code that agents can run... **Supported languages depend
-   on the agent implementation**"——目录结构和 `SKILL.md` 格式是标准化的，但"脚本怎么被调用"
-   完全留给具体 agent 实现决定，不存在"官方标准做法必须走 shell/subprocess"这种强制要求。
-2. **Anthropic 官方确实把"工具太多、上下文太大"当成一个要解决的问题**，方案就是"用更少的
-   通用工具+让细节按需从文件系统里加载"。见
-   [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp)：
-   把每个能力都注册成独立绑定工具是低效的（文中例子：传统做法 150,000 tokens vs 用代码执行
-   方式 2,000 tokens，省 98.7%），做法是不逐个绑工具，而是把工具实现当作代码放在文件系统里，
-   给模型**一个**通用执行入口，按需发现、按需加载定义——跟本文方案 B 的 dispatcher 思路是
-   同一个形状：**1 个通用入口替换 N 个各自带完整 schema 的工具**。
-3. **但官方版本的执行环境是沙箱，不是裸机 shell**。Claude 自家 Skills 功能
-   （[claude.com/blog/skills](https://claude.com/blog/skills)）明确写了 Skills 依赖
-   "Code Execution Tool beta"——一个**安全沙箱**，不是"直接在宿主机跑命令"。这跟项目里现成能
-   拿到的 `deepagents.LocalShellBackend`（官方文档写明"无沙箱、直接在宿主机跑，不建议处理
-   不可信输入"）完全不是一个安全级别。
-
-**落到我们的场景**：官方最佳实践的本质是"更少通用工具 + 细节按需加载"，这一点方案 B2 完全
-做到（1 个 dispatcher 工具，细节留在 SKILL.md 和脚本文件里，不预先塞进 schema）。跟官方完整
-模式相比，B2 少的是"模型现场写新代码"这层自由度——官方需要沙箱兜底就是为了安全地给这层自由度，
-而我们的场景是几条固定的报表流水线，压根不需要"模型现场写代码"，白名单式函数调用完全够用，
-所以合理地跳过"引入沙箱"这一步，不算打折扣，是按需匹配能力、不多引入不需要的自由度和风险。
-
-**结论：确认采用方案 B2**（受限白名单 dispatcher，不接 shell/无沙箱执行）。下文方案 B 的
-描述均以 B2 为准，B1 保留记录仅作对比参考，不作为待实施方案。
-
-### 补充概念澄清：dispatcher 和"脚本"到底是什么
-
-- `run_skill_script` 这个工具本身不"执行"任何文件，就是一个查表转发的普通函数：按
-  `(skill, script)` 查一张固定注册表，转发成一次普通的 Python 函数调用，参数校验后传入。
-- `skills/*/scripts/*.py` 里的"脚本"，在 B2 语境下就是**普通的可 import 的 Python 模块**（暴露
-  一个入口函数，比如 `def generate(render_type, runtime): ...`），不是"可从命令行独立跑的程序"。
-  dispatcher 是 `import` 这个模块调用函数，不是 `subprocess.run(["python", "generate.py"])`
-  起子进程——跟现在 `cost_report_tools.py` 里 `from src.agent.tools._cost_report_render import
-  render_chart_screenshot` 这句 import 本质上是一回事，只是文件挪了目录、多了一层 dispatcher
-  转发。脚本内部原有的文件读写、`subprocess.run(["soffice", ...])` 调 LibreOffice 等操作全部
-  保留、不受影响——这些参数从头到尾是代码内部生成的临时路径，不经过模型/用户输入，跟"要不要
-  给模型 shell 权限"是两个独立问题。
-- SKILL.md 里描述"调用 xxx 脚本"这句话，实际指向的是"模型该调用
-  `run_skill_script(skill=..., script=..., args=...)` 这个工具、传什么参数"，不是字面意义上的
-  "运行这个文件"。
-
-## 方案 A：精简 docstring（docstring 部分已实施，物理搬迁部分未做）
-
-**局限（先说结论）**：这个方案**不能有效解决"工具太多"的问题**——工具条目数量还是 8 个
-不变，只是把其中两个工具的 docstring 变薄了。价值仅限于"成本极低的即时优化"，不是"工具瘦身"
-的根本解法；技能继续增多的话，"工具列表越长"这个问题依然存在，得靠方案 B（dispatcher）或
-方案 C（沙箱）才能从"条目数量"层面真正收敛。
-
-**状态**：docstring 精简已于 2026-08-25 完成——`generate_cost_report_image` /
-`generate_alipay_matching_report` 的 docstring 从"参数 + 报表结构 + 常见请求映射 + 失败提示"
-精简到只留模型决定是否调用/怎么传参数所必需的最少信息（防误触发句原样保留），被删掉的内容
-逐句核对过均已在对应 `SKILL.md` 里覆盖。把纯逻辑文件物理搬迁到 `skills/*/scripts/`（比如
-`_cost_report_render.py` → `skills/cost-report/scripts/render.py`）这部分没做——纯粹是目录
-整洁度问题，不影响 schema 大小，优先级低，暂不安排。
-
-## 方案 B（已确认采用 B2）：引入受限白名单 dispatcher 工具
-
-### 改动内容
-
-1. 把 `generate_cost_report_image` / `generate_alipay_matching_report` 的完整流水线逻辑做成
-   `skills/cost-report/scripts/generate.py`、`skills/alipay-report/scripts/generate.py`
-   ——每个都是可以独立跑的入口（接收参数、返回结果路径）。
-2. 用**一个**通用工具替换掉这两个绑定工具，例如 `run_skill_script(skill: str, args: dict)`。
-   这个工具的 docstring 可以很短："运行某个技能自带的脚本，脚本名称/参数从对应 SKILL.md 里
-   获取"——具体每个脚本要传什么参数，这部分说明彻底移进 SKILL.md，模型需要用的时候自己先
-   `read_file` 看清楚再调用。工具列表从 8 个降到 7 个（以后每加一个"一次性脚本"型技能，工具
-   数都不再增加）。
-3. `run_skill_script` 内部怎么执行 `scripts/generate.py`，有两种做法，安全性天差地别：
-   - **B1：真正 shell/subprocess 执行**——依赖 `deepagents.backends.LocalShellBackend.execute`
-     之类的能力。这个 backend 的官方文档明确写了"无沙箱、无隔离，命令直接在宿主机上以当前
-     用户权限运行"，并且**不建议**用在"处理不可信用户输入"的场景——而这个 agent 是直接对接
-     WhatsApp 真实用户消息的生产服务，用户的自然语言最终会影响到传给脚本的参数，这条边界一旦
-     开了口子，风险评估要单独做（比如是否要接 HITL 人工审核中间件、是否要限制脚本目录之外的
-     任何路径访问等）。
-   - **B2：受限白名单 dispatcher**——`run_skill_script` 内部不真的起子进程，而是维护一个
-     `{("cost-report", "generate"): generate_cost_report_image_impl, ...}` 的固定注册表，按
-     `skill` + `script` 查表调用，参数用 pydantic/dict 校验。本质还是普通函数调用，没有新增
-     任何执行面，只是把多个工具的 schema 合并成一个——收益类似"减少工具条目数"，但不是真正
-     意义上的"脚本执行"，某种程度上只是把方案 A 的"合并成一个工具"这一步做到底。
-4. 无论 B1/B2，都要同步改 [files.py](../src/agent_server/shared/files.py)：现在
-   `FILE_OUTPUT_TOOL_NAMES` 是靠具体工具名（`generate_cost_report_image` 等）匹配
-   `ToolMessage.name` 来判断"这次工具调用的返回值要不要自动发文件给用户"。换成单一
-   `run_skill_script` 之后，工具名不再能区分技能，需要改成按 `skill` 参数或返回内容里的某个
-   标记字段来判断是否需要自动发文件。
-
-### 优点
-
-- 工具列表条目数量和标准 schema 体量都能进一步压缩，且是可扩展的收益——以后新增"一次性脚本"
-  型技能不需要再多绑一个工具。
-- 更贴近 Anthropic Agent Skills 规范里"code execution with skills"的完整设计意图（skill 提供
-  脚本，agent 按需执行，而不是每个脚本都单独包一层工具定义）。
-
-### 缺点 / 风险
-
-- B1 涉及安全边界的实质性变化（无沙箱 shell 执行），对一个直接服务真实 WhatsApp 用户的生产
-  agent 而言是需要认真评估的决策，不是纯技术选型问题。
-- B2 不新增执行面，但需要重新设计 `runtime.context`（`report_id`/`user_id` 等）怎么传进
-  dispatcher、`files.py` 的自动发文件逻辑要跟着改，改动范围比方案 A 大出一圈。
-- 无论哪种，`SubAgent`/子代理（如 `web-search-agent`）目前用的是"传入具体工具列表"的方式
-  （`main.py` 第 73-79 行），如果以后要给子代理也接入某个技能脚本，dispatcher 模式下要多想一步
-  怎么限定子代理只能调它被允许的那个技能/脚本，避免权限一次性放开到"所有技能脚本"。
-
-## 方案 C：接入沙箱，按 deepagents 官方模式真正"执行"脚本文件（补充记录，暂不采用）
-
-### 来源
-
-LangChain/deepagents 官方文档（[deepagents/skills#sandbox-scripts](https://docs.langchain.com/oss/python/deepagents/skills#sandbox-scripts)）
-明确写了：脚本只有通过**沙箱 backend**才能被"执行"——"the agent needs access to a shell,
-which only sandbox backends provide"。没有沙箱的话，agent 对 `skills/*/scripts/*.py` 能做的
-唯一事情是当纯文本 `read_file` 读出来，读完之后想让逻辑真的跑起来仍然得靠 shell，而这条路径
-只有 `LangSmithSandbox` 之类的沙箱 backend 才提供——`LocalShellBackend`（无沙箱）不算数。这个
-结论印证了本文档 B1/B2 判断的正确性：B1 那种"无沙箱硬跑 shell"本来就不是 deepagents 设计意图
-内的用法。
-
-### 改动内容
-
-1. 引入沙箱 backend：托管方案接官方示例里的 `LangSmithSandbox`；自建方案则用 Docker/gVisor/
-   Firecracker 之类的容器隔离实现同等接口。
-2. 用 `CompositeBackend` 把 `skills/` 路由到沙箱、其余路由走现有 backend（官方示例：
-   `CompositeBackend(default=sandbox_backend, routes={"/skills/": StoreBackend(...)})`）。
-3. 加一层中间件同步文件进出沙箱：`abefore_agent` 把 skill 文件拷进沙箱容器，`after_agent` 把
-   产物（PNG/Excel）下载回持久存储，供 `files.py` 继续按现有逻辑读取。
-4. 沙箱镜像要装齐现有脚本的运行依赖（LibreOffice `soffice`、Python 环境），网络策略要专门
-   放行访问 `thrid_app`（成本报表/支付宝报表的模拟第三方接口）的出口，不能一刀切禁网。
-
-### 优点
-
-- 完整落地 deepagents/Anthropic 官方"code execution with skills"设计意图——以后如果想让模型
-  现场写代码调用/组合技能脚本（而不是只能从白名单里选），这层基建已经具备。
-- 是唯一真正"执行"文件系统里脚本文件（而不是 import 调用）的方案，概念上最贴近
-  agentskills.io 规范里"scripts/ 目录"字面意义上的用法。
-
-### 缺点 / 风险
-
-- 额外基建投入远超本文档其余方案：选型并接入沙箱服务、维护镜像依赖、设计文件进出同步中间件、
-  评估每次调用新增的容器启动延迟和资源成本——这是独立的基建决策，不建议跟其余方案的改动混在
-  一次改动里做。
-- 对当前场景收益有限：cost-report/alipay-report 是固定、确定性、经过审查的流水线，不是模型
-  现场生成的未知代码，风险面本身就小——加沙箱主要防"脚本自身 bug 炸得更彻底"，不是防"恶意
-  代码注入"。沙箱的边际安全收益要在"模型现场写任意代码"这个场景才真正体现。
-
-### 结论
-
-暂不采用。仅在以后确实需要"模型自己写代码调用/组合技能脚本"这层自由度时，才值得单独立项
-评估引入沙箱；在此之前，方案 B2 的白名单 dispatcher 已经足够覆盖当前"固定报表流水线"的场景，
-不需要为不需要的自由度支付沙箱基建成本。
-
-## 方案对比
-
-| | 方案 A | 方案 B | 方案 C |
-| --- | --- | --- | --- |
-| 是否新增执行面 | 否 | B1 是 / B2 否 | 是（沙箱内执行） |
-| 工具条目数量 | 不变（8个） | 减少（7个，且可扩展） | 视具体设计（可与 B2 结合，同样可降到 7 个左右） |
-| 每轮标准 schema 体量 | 明显减小（两个最重的工具变薄，docstring 部分已实施） | 更小 | 更小（同 B2） |
-| 改动范围 | 削减 docstring 文字（已完成）+ 移文件/改 import（未做） | 新增 dispatcher + 改 files.py + 重新设计参数传递 | 引入沙箱 backend + 文件同步中间件 + 镜像依赖 + 网络策略 |
-| 风险 | 低 | B1 高（安全边界）/ B2 中（架构改动面） | 安全边界不新增风险（脚本固定、非模型现场生成），但基建投入最大 |
-| files.py 是否要改 | 不需要 | 需要 | 需要 |
-
-## 待定问题
-
-- dispatcher 注册表/参数校验的具体形态（`skill`+`script` 两级 key，还是别的组织方式）。
-- `runtime.context`（`report_id`/`user_id` 等）怎么传进 dispatcher 再传给具体脚本函数——现在
-  两个 `@tool` 函数是靠 `ToolRuntime[ContextSchema]` 参数自动注入的，换成 dispatcher 转发之后
-  这条注入路径要重新设计。
-- `files.py` 的 `FILE_OUTPUT_TOOL_NAMES` 改成按什么字段判断"要不要自动发文件"（`skill` 参数？
-  返回内容里的标记字段？）。
-- 子代理（`web-search-agent` 等）以后要不要接入某个技能脚本时，怎么限定它只能调被允许的那个
-  技能/脚本，不要一次性放开到"所有技能脚本"。
-
-## 状态
-
-方向已确认：采用方案 B2（受限白名单 dispatcher，不接 shell）。方案 A 的 docstring 精简部分
-已于 2026-08-25 落地，但明确其局限——不解决"工具条目数量"问题，只是低成本的即时优化。方案 C
-（接入沙箱）补充记录供以后参考，暂不采用。下一步进入 B2 的详细实施规划（dispatcher 设计、
-文件迁移清单、`files.py` 改动、SKILL.md 补充内容）。
+| [src/agent/tools/cost_report_tools.py](../src/agent/tools/cost_report_tools.py) | docstring 已精简；流水线逻辑待阶段二迁移 |
+| [src/agent/tools/alipay_report_tools.py](../src/agent/tools/alipay_report_tools.py) | 同上 |
+| [src/agent/skills/*/SKILL.md](../src/agent/skills/) | 已覆盖被精简掉的 docstring 内容 |
+| [sandbox/Dockerfile](../sandbox/Dockerfile) | 阶段一最小镜像，阶段二需加 LibreOffice + 依赖 |
+| [docker-compose.yml](../docker-compose.yml) | `sandbox` service 已加 |
+| [src/agent/backends/docker_sandbox.py](../src/agent/backends/docker_sandbox.py) | `DockerSandbox` 已实现，未接入 `main.py` |
+| [sandbox/smoke_test.py](../sandbox/smoke_test.py) | 手动验证脚本，已通过 |
+| [src/agent/main.py](../src/agent/main.py) | 阶段二要把 `DockerSandbox` 接成 `CompositeBackend` 的 `default`，删掉两个绑定工具 |
+| [src/agent_server/shared/files.py](../src/agent_server/shared/files.py) | 阶段二要改自动发文件判断逻辑 |
