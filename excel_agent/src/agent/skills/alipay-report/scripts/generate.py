@@ -2,11 +2,12 @@
 """支付宝匹配数据表生成 —— 沙箱容器内跑的 CLI 版本，供 deepagents 内置的 execute 工具调用。
 
 跟原来 src/agent/tools/alipay_report_tools.py（@tool 版本，已废弃/待删）流程完全一致：分页
-拉当天全部支付宝匹配流水 -> 按 数据类别 -> 明细分类 -> 金额区间 三级动态分组聚合 -> 用
-openpyxl 现场建表 -> 用 LibreOffice 把这张 sheet 整体截图成 PNG。区别只是参数从 Python 对象
-（ContextSchema）换成命令行字符串参数，且本文件是自包含的——不 import 项目源码（容器里也
-没有那份代码，只有 skills/ 这一份 bind mount），LibreOffice 截图原语（ReportRenderError/
-_soffice_convert 等）、命名/快照目录约定、分组聚合/建表逻辑都在本文件内重新实现一份。
+拉某一天（--date 不传则默认当天）全部支付宝匹配流水 -> 按 数据类别 -> 明细分类 -> 金额区间
+三级动态分组聚合 -> 用 openpyxl 现场建表 -> 用 LibreOffice 把这张 sheet 整体截图成 PNG。
+区别只是参数从 Python 对象（ContextSchema）换成命令行字符串参数，且本文件是自包含的——不
+import 项目源码（容器里也没有那份代码，只有 skills/ 这一份 bind mount），LibreOffice 截图
+原语（ReportRenderError/_soffice_convert 等）、命名/快照目录约定、分组聚合/建表逻辑都在
+本文件内重新实现一份。
 
 跟 cost-report/scripts/generate.py 的关键差异：
 - 没有固定模板——每次调用用 openpyxl 从空白 workbook 现场建表，行数随当天数据量变化，
@@ -236,17 +237,26 @@ def render_pdf_page_with_footer(pdf_path: Path, page_index: int, out_path: Path,
 # ---------------------------------------------------------------------------
 
 
-def _fetch_all_alipay_records(client: httpx.Client) -> tuple[list[dict], str, int]:
+def _fetch_all_alipay_records(
+    client: httpx.Client, target_date: date | None
+) -> tuple[list[dict], str, int]:
     """返回 (全部记录, 这批数据对应的自然日, 接口 total)。`date`/`total` 都是接口在每一页
-    响应里都会带的顶层字段，跟分页无关，取第一页返回的即可。"""
+    响应里都会带的顶层字段，跟分页无关，取第一页返回的即可。
+
+    `target_date` 为 None 时不传 date 查询参数，接口自己默认当天；传了就原样转 ISO
+    字符串传给接口的 `date` 参数（接口按这个日期返回那一天的整日数据）。
+    """
     items: list[dict] = []
     report_date: str | None = None
     total = None
     page = 1
+    params: dict[str, int | str] = {"page_size": _PAGE_SIZE}
+    if target_date is not None:
+        params["date"] = target_date.isoformat()
     while (total is None or len(items) < total) and page <= _MAX_PAGES:
         resp = client.get(
             f"{THIRD_APP_BASE_URL}/api/alipay/matching-records",
-            params={"page": page, "page_size": _PAGE_SIZE},
+            params={**params, "page": page},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -519,11 +529,30 @@ def render_screenshot(xlsx_path: Path, out_path: Path, footer_text: str, tmp_dir
 # ---------------------------------------------------------------------------
 
 
-def generate(report_id: str, caller: str, user_id: str | None) -> Path:
+def _parse_target_date(date_str: str | None) -> date | None:
+    """把 CLI 传入的 --date 转成 date 对象；None 表示不限定，接口默认当天。
+
+    调用方（agent）已经负责把"昨天""3号"这类口语化表达换算成 ISO 日期字符串，这里
+    只做格式校验和"不能是未来"的兜底校验——避免脚本本身对着一个不存在的未来日期
+    生成一份看起来煞有介事的假报表。
+    """
+    if date_str is None:
+        return None
+    try:
+        parsed = date.fromisoformat(date_str)
+    except ValueError as e:
+        raise ReportRenderError(f"日期格式不对：{date_str!r}，需要 YYYY-MM-DD 格式。") from e
+    if parsed > date.today():
+        raise ReportRenderError(f"不能查询未来的日期：{parsed.isoformat()}。")
+    return parsed
+
+
+def generate(report_id: str, caller: str, user_id: str | None, date_str: str | None) -> Path:
+    target_date = _parse_target_date(date_str)
     snapshot_dir = resolve_snapshot_dir(report_id, caller, user_id)
 
     with httpx.Client(timeout=30.0) as client:
-        records, report_date, total = _fetch_all_alipay_records(client)
+        records, report_date, total = _fetch_all_alipay_records(client, target_date)
 
     if not records:
         raise ReportRenderError("第三方数据服务当前没有返回任何支付宝匹配记录，无法生成报表。")
@@ -555,10 +584,11 @@ def main() -> int:
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--caller", default="debug")
     parser.add_argument("--user-id", default=None)
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD，不传默认当天")
     args = parser.parse_args()
 
     try:
-        save_path = generate(args.report_id, args.caller, args.user_id)
+        save_path = generate(args.report_id, args.caller, args.user_id, args.date)
     except httpx.HTTPError as e:
         print(
             f"拉取支付宝匹配数据失败：{e}\n"
