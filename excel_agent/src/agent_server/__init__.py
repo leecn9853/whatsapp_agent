@@ -21,7 +21,9 @@ from src.agent_server.shared.runs_store import RunsStore
 from src.agent_server.shared.summaries_store import SummariesStore
 from src.agent_server.channels import routes
 from src.agent_server.channels.whatsapp.routes import lifespan as _whatsapp_lifespan
-from src.agent_server.channels.whatsapp_meta.routes import lifespan as _whatsapp_meta_lifespan
+from src.agent_server.channels.whatsapp_meta.routes import (
+    lifespan as _whatsapp_meta_lifespan,
+)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -40,7 +42,9 @@ async def _lifespan(app: Starlette):
         # 单独一个连接池给 channels/tob/{routes,admin}.py 的 checkpoints 表原始
         # SQL 查询、runs_store 用，不复用 AsyncPostgresStore 内部管理的池（那个
         # 只服务 store 自己的方法）。
-        pool: AsyncConnectionPool = AsyncConnectionPool(DATABASE_URL, min_size=1, max_size=10, open=False)
+        pool: AsyncConnectionPool = AsyncConnectionPool(
+            DATABASE_URL, min_size=1, max_size=10, open=False
+        )
         await pool.open()
         try:
             runs_store = RunsStore(pool)

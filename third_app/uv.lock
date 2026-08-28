@@ -246,7 +246,7 @@ wheels = [
 ]
 
 [[package]]
-name = "thrid-app"
+name = "third-app"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

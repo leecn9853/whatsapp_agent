@@ -15,9 +15,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # 阶段一：见 docs/sandbox-selfhosted-plan.md。长驻容器，DockerSandbox 通过 exec 调用它。
+  # 长驻容器，DockerSandbox 通过 exec 调用它。
   sandbox:
     build: ./sandbox
+    volumes:
+      - ./src/agent/skills:/workspace/skills:ro
+      - ./output:/workspace/output
+      - ./snapshots:/workspace/snapshots
+    environment:
+      # .env 里的 THIRD_APP_BASE_URL 是宿主机视角的 127.0.0.1，容器里必须换成
+      # host.docker.internal 才能连到跑在宿主机上的模拟数据服务——这里硬编码，
+      # 不从 .env 做变量替换，避免不小心继承宿主机的 127.0.0.1 值。
+      THIRD_APP_BASE_URL: "http://host.docker.internal:8800"
 
 volumes:
   pgdata:

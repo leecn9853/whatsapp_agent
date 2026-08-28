@@ -2,12 +2,10 @@ from datetime import date
 
 from fastapi import FastAPI, Query
 
-from thrid_app.data_generator import (
-    generate_alipay_matching_records,
-    generate_monthly_costs,
-    generate_supplier_purchases,
-)
-from thrid_app.schemas import (
+from third_app.alipay_cache import get_matching_records
+from third_app.data_generator import generate_monthly_costs, generate_supplier_purchases
+from third_app.schemas import (
+    AlipayMatchingRecord,
     MonthlyCostRow,
     PagedAlipayMatchingRecords,
     PagedMonthlyCosts,
@@ -18,7 +16,7 @@ app = FastAPI(title="Mock Cost Report Data Service")
 
 _SUPPLIER_PURCHASES = generate_supplier_purchases(150)
 _MONTHLY_COSTS = generate_monthly_costs(504)
-_ALIPAY_MATCHING_RECORDS = generate_alipay_matching_records(2000)
+get_matching_records(date.today())
 
 
 @app.get("/api/electronics/orders", response_model=list[SupplierPurchaseRow])
@@ -45,21 +43,27 @@ def get_monthly_costs(
 
 @app.get("/api/alipay/matching-records", response_model=PagedAlipayMatchingRecords)
 def get_alipay_matching_records(
+    record_date: date | None = Query(default=None, alias="date"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=200, ge=1, le=500),
 ):
     """支付宝匹配数据流水明细（整日数据），支持分页，每页最多 500 条。
 
+    可通过 date 参数指定日期，未指定时默认返回当天数据。同一日期的数据会
+    缓存为本地 JSON 文件，缓存缺失时才重新生成，保证同一日期分页数据一致。
+
     金额区间、成功率、序号不在此接口返回，由下游根据 order_amount 分桶、
     根据 status 统计后在 Excel 中生成。
     """
+    target_date = record_date or date.today()
+    records = get_matching_records(target_date)
     start = (page - 1) * page_size
     end = start + page_size
     return PagedAlipayMatchingRecords(
-        date=date.today().isoformat(),
-        total=len(_ALIPAY_MATCHING_RECORDS),
+        date=target_date.isoformat(),
+        total=len(records),
         page=page,
         page_size=page_size,
-        items=_ALIPAY_MATCHING_RECORDS[start:end],
+        items=[AlipayMatchingRecord(**r) for r in records[start:end]],
     )
 

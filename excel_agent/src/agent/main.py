@@ -15,9 +15,10 @@ from langchain.agents.middleware import (
 )
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
-from deepagents import create_deep_agent, FilesystemPermission
+from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
+from src.agent.backends.docker_sandbox import DockerSandbox
 from src.agent.middleware.conversation_summary import ConversationSummaryAuditMiddleware
 from src.context import ContextSchema
 from src.agent.tools.excel_tools import (
@@ -26,8 +27,6 @@ from src.agent.tools.excel_tools import (
     inspect_excel,
     list_excel_files,
 )
-from src.agent.tools.cost_report_tools import generate_cost_report_image
-from src.agent.tools.alipay_report_tools import generate_alipay_matching_report
 from src.agent.tools.save_file import save_file
 from src.agent.tools.tavily_search import web_search
 
@@ -58,15 +57,17 @@ tools = [
     inspect_excel,
     aggregate_excel_sheet,
     create_chart_sheet,
-    generate_cost_report_image,
-    generate_alipay_matching_report,
 ]
 
 @dynamic_prompt
 def caller_prompt(request: ModelRequest[ContextSchema]) -> str:
-    caller = request.runtime.context.caller
-    print(f"[Middleware] caller: {caller}")
-    return f"[Middleware] caller: {caller}"
+    ctx = request.runtime.context
+    lines = [f"[Middleware] caller: {ctx.caller}"]
+    if ctx.run_id:
+        lines.append(f"当前任务 report_id：{ctx.run_id}")
+    if ctx.user_id:
+        lines.append(f"当前用户 user_id：{ctx.user_id}")
+    return "\n".join(lines)
 
 
 # 子代理：通过网络搜索获取最新信息的子代理，通过 task 工具由主代理按需委托调用
@@ -83,15 +84,16 @@ subagents = [web_search_subagent]
 # StateBackend 读不到磁盘文件）。root_dir 限定在 src/ 一级，避免把项目根目录下的
 # .env、out_files/ 暴露给内置文件工具。
 SRC_DIR = Path(__file__).resolve().parent
+# fs_backend 只给下面 seed_default_memory()
 fs_backend = FilesystemBackend(root_dir=SRC_DIR)
 
 # /memories/ 路由到 StoreBackend，按 user_id 隔离，实现跨 thread 的用户专属记忆；
-# 其余路径（skills 等）仍走磁盘 FilesystemBackend。
+# 其余路径走 DockerSandbox，模型执行的工具作用于沙箱容器的 /workspace，而不是宿主机磁盘（收窄暴露面）。
 # WhatsApp 的 user_id（如 "12345@c.us"）带句点，而 LangGraph store 的命名空间
 # 标签不允许包含句点，所以这里要替换掉，否则真实用户消息一律会报
 # InvalidNamespaceError。
 backend = CompositeBackend(
-    default=fs_backend,
+    default=DockerSandbox(),
     routes={
         "/memories/": StoreBackend(
             namespace=lambda rt: ((rt.context.user_id or "debug").replace(".", "_"),)
@@ -110,9 +112,8 @@ async def seed_default_memory(
 
     之后完全由 Agent 通过 edit_file 自行维护，这里只负责起点。
 
-    必须用 aread/awrite（而不是 read/write）：/memories/ 路由到的 StoreBackend
-    对 AsyncPostgresStore 会在同步接口上直接报错拒绝调用（防止在事件循环里
-    发生死锁），只有 aread/awrite 会走 store.aget/aput 的原生异步接口。
+    必须用 aread/awrite，aread/awrite 走的是 store.aget/aput 原生异步接口，可以在协程里正常 await。
+    这里的 store 是 AsyncPostgresStore
     """
     if (await backend.aread(MEMORY_PATH)).error is None:
         return None  # 该用户已经有记忆了，不覆盖
@@ -201,8 +202,13 @@ def build_agent(checkpointer, store, summaries_store):
     deepagents 内部会自动注入：
     - 任务规划中间件 (TodoListMiddleware / write_todos)
     - 文件系统中间件 (基于上面的 CompositeBackend；真实文件落盘统一走
-      上面的 save_file 工具，所以下面用 permissions 禁掉了内置工具在 /memories/
-      之外的写权限)
+      上面的 save_file 工具。default backend 是支持 execute 的 DockerSandbox，
+      deepagents 要求这种 backend 下 _permissions 的所有路径必须落在
+      CompositeBackend.routes 前缀内，这里事实上只能有 /memories/ 一个前缀，
+      没法再对 /workspace 做任何限制，所以直接不传 permissions——内置工具能
+      自由写容器 /workspace 下任意位置；由于镜像只挂了 skills(ro)/output/
+      snapshots 三个目录、其余是容器内临时文件系统，不构成对宿主机的额外
+      暴露，可接受)
     - 记忆中间件 (MemoryMiddleware，由 memory= 参数触发，把 /memories/AGENTS.md
       的内容注入系统提示，并允许 Agent 通过 edit_file 自主更新)
     """
@@ -249,20 +255,12 @@ def build_agent(checkpointer, store, summaries_store):
             caller_prompt,
         ],
         subagents=subagents,
-        skills=["./skills/"],
+        skills=["/workspace/skills/"],
         backend=backend,
         memory=["/memories/AGENTS.md"],
         context_schema=ContextSchema,
         store=store,
         checkpointer=checkpointer,
-        permissions=[
-            # /memories/ 需要保留写权限，否则 memory 中间件的 edit_file 会被下面的
-            # 全局 deny 规则拦住，规则按声明顺序匹配，第一条命中的生效。
-            FilesystemPermission(
-                operations=["write"], paths=["/memories/**"], mode="allow"
-            ),
-            FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
-        ],
         system_prompt="""你是一个通过 WhatsApp 与用户对话的 Excel 数据处理与图表助手，
 擅长读懂表格结构、按需聚合数据、在表格里生成图表（具体规范见已挂载的技能文件）。
 

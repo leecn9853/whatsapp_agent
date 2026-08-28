@@ -1,5 +1,5 @@
 [project]
-name = "thrid-app"
+name = "third-app"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -15,7 +15,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/thrid_app"]
+packages = ["src/third_app"]
 
 [dependency-groups]
 dev = [

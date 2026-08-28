@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 
 from faker import Faker
 
-from thrid_app.schemas import AlipayMatchingRecord, MonthlyCostRow, SupplierPurchaseRow
+from third_app.schemas import AlipayMatchingRecord, MonthlyCostRow, SupplierPurchaseRow
 
 _fake = Faker("zh_CN")
 
@@ -42,17 +42,19 @@ _ALIPAY_CATEGORY_MAP = {
 _ALIPAY_STATUSES = ["成功", "成功", "成功", "成功", "失败", "处理中"]
 _ALIPAY_FAIL_REMARKS = ["渠道超时", "余额不足", "风控拦截", "用户取消"]
 _ALIPAY_AMOUNT_BANDS = [(0, 500), (501, 2000), (2001, 10000), (10001, 30000), (30001, 80000)]
-ALIPAY_REPORT_DATE = date(2026, 8, 18)
 
 
-def generate_alipay_matching_records(count: int = 2000) -> list[AlipayMatchingRecord]:
+def generate_alipay_matching_records(
+    count: int = 2000, record_date: date | None = None
+) -> list[AlipayMatchingRecord]:
+    report_date = record_date or date.today()
     rows = []
     for i in range(count):
         data_category = random.choice(list(_ALIPAY_CATEGORY_MAP))
         detail_category = random.choice(_ALIPAY_CATEGORY_MAP[data_category])
         low, high = random.choice(_ALIPAY_AMOUNT_BANDS)
         status = random.choice(_ALIPAY_STATUSES)
-        occurred_at = datetime.combine(ALIPAY_REPORT_DATE, time.min) + timedelta(
+        occurred_at = datetime.combine(report_date, time.min) + timedelta(
             seconds=random.randint(0, 86399)
         )
         rows.append(

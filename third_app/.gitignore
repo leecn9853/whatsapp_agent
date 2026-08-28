@@ -1,0 +1,15 @@
+src/third_app/.cache/
+
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+
+# Env
+.env

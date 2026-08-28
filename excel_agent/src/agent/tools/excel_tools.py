@@ -24,10 +24,10 @@ from openpyxl.utils import get_column_letter
 
 from src.context import ContextSchema
 from src.agent.tools._naming import build_stem, sanitize_user_id
+from src.agent.tools._paths import PROJECT_ROOT
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-INPUT_DIR = _PROJECT_ROOT / "input"
-OUTPUT_DIR = _PROJECT_ROOT / "output"
+INPUT_DIR = PROJECT_ROOT / "input"
+OUTPUT_DIR = PROJECT_ROOT / "output"
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

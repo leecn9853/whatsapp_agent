@@ -15,6 +15,7 @@ http://127.0.0.1:8800）——如果 third_app 没启动，这一步会打印明
 from __future__ import annotations
 
 import sys
+import time
 
 from src.agent.backends.docker_sandbox import DockerSandbox
 
@@ -59,7 +60,40 @@ def main() -> int:
             "如果 third_app 没启动，这是预期的，不算脚本失败；启动后重跑本脚本再验证。"
         )
 
-    print("\n全部核心项（execute / upload+download）" + ("通过 ✓" if ok else "未通过 ✗"))
+    print("4. execute(timeout=...) 真的会终止超时命令，且不影响正常调用")
+    which_result = sandbox.execute("which timeout")
+    if which_result.exit_code != 0:
+        ok = False
+        print("   ✗ 镜像里没有 timeout 命令（coreutils），DockerSandbox.execute 的超时机制失效")
+    else:
+        print(f"   ✓ 镜像自带 timeout 命令：{which_result.output.strip()!r}")
+
+        start = time.monotonic()
+        timeout_result = sandbox.execute("sleep 5", timeout=1)
+        elapsed = time.monotonic() - start
+        if elapsed >= 3:
+            ok = False
+            print(f"   ✗ sleep 5 + timeout=1 实际耗时 {elapsed:.1f}s，没有被提前终止")
+        elif timeout_result.exit_code != 124:
+            ok = False
+            print(f"   ✗ 超时命令 exit_code={timeout_result.exit_code}，预期 124")
+        elif "已被终止" not in timeout_result.output:
+            ok = False
+            print(f"   ✗ 超时提示文案缺失，output={timeout_result.output!r}")
+        else:
+            print(f"   ✓ 耗时 {elapsed:.1f}s 被提前终止，exit_code=124，提示文案正确")
+
+        normal_result = sandbox.execute("echo ok", timeout=5)
+        if normal_result.exit_code == 0 and normal_result.output.strip() == "ok":
+            print("   ✓ 正常命令未超时时不受影响")
+        else:
+            ok = False
+            print(
+                f"   ✗ 包一层 timeout 之后正常命令异常：output={normal_result.output!r} "
+                f"exit_code={normal_result.exit_code}"
+            )
+
+    print("\n全部核心项（execute / upload+download / timeout）" + ("通过 ✓" if ok else "未通过 ✗"))
     return 0 if ok else 1
 
 
