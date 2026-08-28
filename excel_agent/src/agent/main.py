@@ -19,6 +19,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from deepagents.middleware.subagents import SubAgent
 from src.agent.backends.docker_sandbox import DockerSandbox
+from src.agent.middleware._multimodal import strip_multimodal_content
 from src.agent.middleware.conversation_summary import ConversationSummaryAuditMiddleware
 from src.context import ContextSchema
 from src.agent.tools.excel_tools import (
@@ -47,6 +48,12 @@ llm = ChatOpenAI(
     api_key=SecretStr(deepseek_api_key),
     base_url=os.getenv("DEEPSEEK_BASE_URL"),
     temperature=0.3,
+    # deepseek-v4-flash 不在 langchain 的内置 model profile 库里，profile 默认是
+    # None——deepagents 的 FilesystemMiddleware 清洗多模态内容块时（把 read_file 读到的
+    # 图片等换成文字占位符，避免不支持的模型直接 400）靠 model.profile 逐字段判断
+    # 是否支持，缺失字段默认当"支持"处理，等于清洗形同虚设。这里显式声明这个模型
+    # 不支持图片/音频/视频输入，让那层已有的清洗逻辑真正生效。
+    profile={"image_inputs": False, "audio_inputs": False, "video_inputs": False},
 )
 
 # 工具列表
@@ -90,8 +97,7 @@ fs_backend = FilesystemBackend(root_dir=SRC_DIR)
 # /memories/ 路由到 StoreBackend，按 user_id 隔离，实现跨 thread 的用户专属记忆；
 # 其余路径走 DockerSandbox，模型执行的工具作用于沙箱容器的 /workspace，而不是宿主机磁盘（收窄暴露面）。
 # WhatsApp 的 user_id（如 "12345@c.us"）带句点，而 LangGraph store 的命名空间
-# 标签不允许包含句点，所以这里要替换掉，否则真实用户消息一律会报
-# InvalidNamespaceError。
+# 标签不允许包含句点，所以这里要替换掉，否则真实用户消息一律会报 InvalidNamespaceError。
 backend = CompositeBackend(
     default=DockerSandbox(),
     routes={
@@ -155,13 +161,19 @@ async def topic_gate(
 
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
     同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常 Excel 任务。
+
+    这里直接拿 state["messages"] 发起独立的 llm.ainvoke() 调用，不经过 deepagents
+    FilesystemMiddleware 包在主模型节点外面的那层多模态内容清洗（那层只清洗发给主
+    模型的临时 ModelRequest，不改 state 本身，且只在主模型节点生效）——如果历史里有
+    之前 read_file 预览生成图片留下的 image content block，会被原样带进这次调用，
+    直接把不支持图片输入的模型 400 掉。需要在这个独立调用前自己过滤一遍。
     """
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], HumanMessage):
         return None
 
     reply = await llm.ainvoke(
-        [SystemMessage(content=_TOPIC_GATE_SYSTEM_PROMPT), *messages]
+        [SystemMessage(content=_TOPIC_GATE_SYSTEM_PROMPT), *strip_multimodal_content(messages)]
     )
     on_topic = str(reply.content).strip().lower().startswith("y")
     if on_topic:

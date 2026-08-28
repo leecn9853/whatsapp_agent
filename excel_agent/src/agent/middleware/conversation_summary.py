@@ -25,6 +25,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
+from src.agent.middleware._multimodal import strip_multimodal_content
 from src.context import ContextSchema
 
 if TYPE_CHECKING:
@@ -99,8 +100,9 @@ class ConversationSummaryAuditMiddleware(AgentMiddleware[AgentState[Any], Contex
             return None
 
         thread_id = runtime.context.user_id or "debug"
+        sanitized_messages = strip_multimodal_content(messages)
         raw_summary = await self._structured_model.ainvoke(
-            [_JSON_MODE_SCHEMA_HINT, *messages, HumanMessage(content=_SUMMARY_INSTRUCTION)]
+            [_JSON_MODE_SCHEMA_HINT, *sanitized_messages, HumanMessage(content=_SUMMARY_INSTRUCTION)]
         )
         # with_structured_output 的静态返回类型是 dict[str, Any] | BaseModel（不管传入
         # 的 schema 是什么都一样宽），实际传入 pydantic 类时运行期必然是该类实例；

@@ -39,7 +39,8 @@ python3 /workspace/skills/cost-report/scripts/generate.py \
 
 **输出契约**：`execute` 返回后看最后一行 stdout：
 - `RESULT_PATH:<路径>` → 把该路径原样传给 `save_file` 工具的 `source_path` 参数，图片就会
-  发给用户，不需要额外传 `filename`/`content`。
+  发给用户，不需要额外传 `filename`/`content`。**不要**再用 `read_file` 去预览这个路径——
+  图片已经通过 `save_file` 发给用户了，预览没有必要。
 - `ERROR:<说明>` → 把说明转述给用户，不要猜测原因、不要重试。
 
 ## 常见请求 → 参数映射

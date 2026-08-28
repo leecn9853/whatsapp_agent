@@ -7,11 +7,14 @@ sandbox/smoke_test.py 里也有独立的验证脚本。
 from __future__ import annotations
 
 import io
+import logging
 import shlex
 import tarfile
+import time
 from typing import cast
 
 import docker
+import docker.errors
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -19,15 +22,61 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CONTAINER_NAME = "excel_agent-sandbox-1"  # docker compose 项目名(excel_agent) + service 名(sandbox) 的默认命名
+DEFAULT_READY_TIMEOUT_SECONDS = 30.0
+DEFAULT_READY_POLL_INTERVAL_SECONDS = 1.0
 
 
 class DockerSandbox(BaseSandbox):
-    """包一个已经通过 `docker compose up -d sandbox` 启动好的长驻容器。"""
+    """包一个已经通过 `docker compose up -d sandbox` 启动好的长驻容器。
 
-    def __init__(self, container_name: str = DEFAULT_CONTAINER_NAME) -> None:
+    容器和 agent 进程谁先起没有严格约束——`__init__` 会等待容器进入 `running` 状态，
+    在 `ready_timeout` 内容器还没就绪（不存在/还在 created/starting 等瞬时状态）就轮询
+    重试，超时后才报清晰的错误，而不是一次查找失败就直接崩溃。
+    """
+
+    def __init__(
+        self,
+        container_name: str = DEFAULT_CONTAINER_NAME,
+        *,
+        ready_timeout: float = DEFAULT_READY_TIMEOUT_SECONDS,
+        poll_interval: float = DEFAULT_READY_POLL_INTERVAL_SECONDS,
+    ) -> None:
         self._client = docker.from_env()
-        self._container = self._client.containers.get(container_name)
+        self._container = self._wait_for_container(container_name, ready_timeout, poll_interval)
+
+    def _wait_for_container(self, container_name: str, ready_timeout: float, poll_interval: float):
+        deadline = time.monotonic() + ready_timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                container = self._client.containers.get(container_name)
+                status = container.status
+            except docker.errors.NotFound:
+                container = None
+                status = None
+
+            if container is not None and status == "running":
+                return container
+
+            state_desc = "不存在" if container is None else f"状态是 {status!r}"
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"sandbox 容器 {container_name!r} 等待 {ready_timeout:.0f}s 后仍{state_desc}，"
+                    "启动失败。请先执行 `docker compose up -d sandbox` 并确认容器状态是 "
+                    "running，再启动 agent-server。"
+                )
+            logger.info(
+                "等待 sandbox 容器 %r 就绪（第 %d 次检查，当前%s），%.0fs 后重试...",
+                container_name,
+                attempt,
+                state_desc,
+                poll_interval,
+            )
+            time.sleep(poll_interval)
 
     @property
     def id(self) -> str:
