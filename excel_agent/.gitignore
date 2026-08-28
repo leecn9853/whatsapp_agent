@@ -28,7 +28,3 @@ snapshots/
 
 # local SQLite persistence (checkpointer + store)
 data/
-
-# test
-test.py
-test/
