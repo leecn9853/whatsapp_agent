@@ -148,12 +148,11 @@ _TOPIC_GATE_SYSTEM_PROMPT = (
 async def topic_gate(
     state: AgentState, runtime: Runtime[ContextSchema]
 ) -> dict | None:  # noqa: ARG001
-    """在主模型（带 web_search/task 等工具）被调用前，先做一次不绑工具的范围判断。
+    """在主模型被调用前，先用一次不绑工具的独立 LLM 调用判断本轮是否跑题；跑题就
+    直接 jump_to="end"，主模型和工具全程不会被调用。
 
-    system_prompt 里"只处理 Excel 任务"这条规则单靠主模型自觉并不可靠——deepseek-v4-flash
-    看到像"台湾的大学怎么样"这类事实性问题，会倾向于直接调 web_search，覆盖掉规则本身。
-    这里用同一个 llm 客户端单独问一句 yes/no（这次调用没有绑定任何工具，天然不会调用
-    web_search），判定跑题就直接 jump_to="end"，主模型和工具全程不会被调用。
+    为什么需要这一步：system_prompt 里"只处理 Excel 任务"这条规则单靠主模型自觉
+    并不可靠。这里单独问一句 yes/no（这次调用没有绑定任何工具）来兜底。
 
     判断标准比"是不是 Excel 任务"更宽：打招呼/寒暄/感谢/告别等社交性发言也算
     on-topic（放行给主模型走正常礼貌回应），只有具体的、与 Excel 无关的知识/
@@ -162,11 +161,11 @@ async def topic_gate(
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
     同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常 Excel 任务。
 
-    这里直接拿 state["messages"] 发起独立的 llm.ainvoke() 调用，不经过 deepagents
-    FilesystemMiddleware 包在主模型节点外面的那层多模态内容清洗（那层只清洗发给主
-    模型的临时 ModelRequest，不改 state 本身，且只在主模型节点生效）——如果历史里有
-    之前 read_file 预览生成图片留下的 image content block，会被原样带进这次调用，
-    直接把不支持图片输入的模型 400 掉。需要在这个独立调用前自己过滤一遍。
+    注意：这里直接拿 state["messages"] 发起独立的 llm.ainvoke() 调用，不经过
+    deepagents FilesystemMiddleware 包在主模型节点外面的那层多模态内容清洗（那层
+    只清洗发给主模型的临时 ModelRequest，不改 state 本身，且只在主模型节点生效）——
+    如果历史里有之前 read_file 预览生成图片留下的 image content block，会被原样
+    带进这次调用，直接把不支持图片输入的模型 400 掉。所以调用前要自己过滤一遍。
     """
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], HumanMessage):
