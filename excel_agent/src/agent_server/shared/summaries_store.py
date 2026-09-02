@@ -95,3 +95,17 @@ class SummariesStore:
                     (thread_id,),
                 )
                 return await cur.fetchall()
+
+    async def aget_summary_detail(self, summary_id: str) -> dict[str, Any] | None:
+        """给查看页面"对比原始消息 vs 摘要"用，按需取单条的 raw_messages（列表页
+        不带，太大）。
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT id, thread_id, token_count_before, raw_messages, session_intent, "
+                    "excel_context, decisions, next_steps, artifacts, created_at "
+                    "FROM conversation_summaries WHERE id = %s",
+                    (summary_id,),
+                )
+                return await cur.fetchone()

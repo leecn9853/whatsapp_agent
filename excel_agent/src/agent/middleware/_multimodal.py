@@ -4,8 +4,8 @@ deepagents 的 `FilesystemMiddleware` 只在发给主模型的临时 `ModelReque
 `model.profile` 清洗过不支持的 multimodal content block（比如 `read_file` 预览生成
 图片产出的 image block），从不修改持久化的 `state["messages"]`。任何绕开主模型节点、
 自己直接拿 `state["messages"]` 发起 `.ainvoke()` 的代码（`topic_gate`、
-`ConversationSummaryAuditMiddleware` 等）都不会受益于那层清洗，需要各自过滤一遍再传
-给不支持图片等多模态输入的模型。
+`StructuredSummarizationMiddleware` 里生成结构化摘要那次调用等）都不会受益于那层清洗，
+需要各自过滤一遍再传给不支持图片等多模态输入的模型。
 """
 
 from __future__ import annotations

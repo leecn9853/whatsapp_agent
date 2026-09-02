@@ -11,7 +11,11 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 
 def serialize_message(m) -> dict:
-    entry: dict = {"role": type(m).__name__, "content": str(getattr(m, "content", m))}
+    entry: dict = {
+        "id": getattr(m, "id", None),
+        "role": type(m).__name__,
+        "content": str(getattr(m, "content", m)),
+    }
     if isinstance(m, AIMessage) and m.tool_calls:
         entry["tool_calls"] = [
             {"name": tc.get("name"), "args": tc.get("args"), "id": tc.get("id")}

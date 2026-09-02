@@ -10,7 +10,6 @@ from langchain.agents.middleware import (
     AgentState,
     ContextEditingMiddleware,
     ModelRequest,
-    SummarizationMiddleware,
     before_agent,
     before_model,
     dynamic_prompt,
@@ -22,7 +21,7 @@ from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBacken
 from deepagents.middleware.subagents import SubAgent
 from src.agent.backends.docker_sandbox import DockerSandbox
 from src.agent.middleware._multimodal import strip_multimodal_content
-from src.agent.middleware.conversation_summary import ConversationSummaryAuditMiddleware
+from src.agent.middleware.conversation_summary import StructuredSummarizationMiddleware
 from src.context import ContextSchema
 from src.agent.tools.excel_tools import (
     aggregate_excel_sheet,
@@ -183,7 +182,11 @@ _TOPIC_GATE_SYSTEM_PROMPT = (
     "判断以下对话里用户最新这句话是否满足下面任一条件：\n"
     "1) 请求内容落在上面某个技能描述的场景范围内（包括基于前面上下文对已有任务的"
     "追问、调整）；\n"
-    "2) 是打招呼、问候、寒暄、感谢、告别、确认收到、闲聊式的礼貌用语等社交性"
+    "2) 前面的对话里已经生成过报表/表格/图表，这句话是针对那份已生成结果的数据"
+    "提问、解读、对比、筛选、排序等（例如\"哪个类别成功率最高\"\"这两个月比"
+    "怎么样\"），即使措辞本身没有出现任何技能描述里的关键词，只要能看出是在问"
+    "已生成结果里的内容，也算在范围内；\n"
+    "3) 是打招呼、问候、寒暄、感谢、告别、确认收到、闲聊式的礼貌用语等社交性"
     "发言，且不构成一个具体的、超出上面技能范围的知识/信息请求。\n"
     "只要满足其中一条就回答 yes，否则回答 no。只回答 yes 或 no，不要解释。"
 )
@@ -205,6 +208,14 @@ async def topic_gate(
     范围的知识/信息请求才会被拦下——否则用户发个"你好"也会收到 _OFF_TOPIC_REPLY，
     体验很怪。
 
+    单靠"落在技能描述范围内"这一条还不够：技能描述天然是围绕"怎么触发生成"写的
+    （比如 alipay-report 的例句都是"生成支付宝匹配数据表"这类），而用户在报表
+    生成之后追问报表数据本身（"哪个类别成功率最高"）用词上往往不会命中这些生成类
+    关键词，曾被判成 no 误拒（提示语是"这个我帮不上忙哦～"，但报表数据其实就在
+    当前 report_id 对应的沙箱快照目录里，主模型本可以读到）。所以额外加了一条：
+    只要前面对话里已经生成过报表/表格/图表，针对那份已生成结果的提问/解读/对比
+    也算 on-topic，不要求措辞命中技能描述关键词。
+
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
     同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常任务。
     """
@@ -222,27 +233,9 @@ async def topic_gate(
 
 
 # checkpointer 管每个 user_id（= thread_id）的对话历史/运行状态（messages、
-# todos、待处理的工具调用等）：
-# - 触发/流程完全是 LangGraph 内置的，不需要也不应该自己手动调用：每次
-#   agent.invoke 开始时，自动按 thread_id 取最新一条 checkpoint 恢复状态；图的
-#   每一步（每个节点跑完）自动落盘一次；下一次同 thread_id 的请求自动接着最新
-#   状态续跑。
-# - AsyncPostgresSaver 构造时要求已经有一个运行中的事件循环（内部会调用
-#   asyncio.get_running_loop()）。本模块在 uvicorn 事件循环启动之前就被
-#   import，所以这里不能直接构造 checkpointer，只能提供 build_agent(checkpointer,
-#   store, summaries_store) 工厂函数，交给 src/agent_server/__init__.py 的
-#   Starlette lifespan（此时事件循环已经在跑）构造好之后再传进来。
-# - 增长问题：deepagents 的 DeepAgentState 已经给 messages 字段配了
-#   DeltaChannel（见 deepagents/graph.py），每一步存的是增量而不是全量快照
-#   （每 50 步才存一次完整快照），把 checkpoint 存储量从 O(对话轮数²) 降到了
-#   O(对话轮数)，所以换成持久化存储不会引入"越聊越大"的爆炸式增长。LangGraph
-#   新增了 BaseCheckpointSaver.prune() 用于手动裁剪旧 checkpoint，但目前装的
-#   版本里没有任何 checkpointer 实现它（包括 InMemorySaver），且其文档明确警告
-#   对使用 DeltaChannel 的图做朴素裁剪会悄悄弄断历史链、丢数据——所以这里不额外
-#   加自定义的裁剪/删除逻辑，等真的遇到数据库文件过大再处理。
-# 摘要触发阈值：SummarizationMiddleware 和 ConversationSummaryAuditMiddleware
-# 共用同一个数字才能对齐节流频率（见下面 ConversationSummaryAuditMiddleware 的
-# 注释），所以提成常量，不要在两处分别写字面量。
+# todos、待处理的工具调用等）
+# 摘要触发阈值：StructuredSummarizationMiddleware 用这个数字判断何时压缩对话，
+# 提成常量避免散落的字面量。
 SUMMARY_TRIGGER_TOKENS = 4000
 
 
@@ -273,35 +266,26 @@ def build_agent(checkpointer, store, summaries_store):
             # 对一条马上要被拒答的消息做无意义的加工。
             topic_gate,
             # 例子：控制单个 thread（user_id）的上下文体量，避免陪聊越久单次调用
-            # token 越贵、最终超出模型上下文窗口。三个中间件管的是不同层面的膨胀，
-            # 按下面的顺序叠加：先精简工具结果，再做摘要审计落库，最后压缩对话本身。
+            # token 越贵、最终超出模型上下文窗口。两个中间件管的是不同层面的膨胀，
+            # 按下面的顺序叠加：先精简工具结果，再压缩对话本身。
             #
             # 1) ContextEditingMiddleware：只清理"工具调用的返回结果"（比如
             #    web_search 返回的长网页正文），不动对话本身。累计输入 token 超过
             #    阈值时，把较早的工具结果替换成占位符。对应 Anthropic
             #    clear_tool_uses 的思路，用默认配置即可。
             ContextEditingMiddleware(),
-            # 2) ConversationSummaryAuditMiddleware：和下面的 SummarizationMiddleware
-            #    完全独立、互不调用——只是共用同一个 SUMMARY_TRIGGER_TOKENS 阈值。
-            #    达到阈值时按固定 Schema（ConversationSummarySchema）生成结构化摘要，
-            #    把"压缩前的原始消息"和"压缩后的结构化结果"一起落库（表结构见
-            #    SummariesStore），用于审计/报表；对 graph 状态本身没有任何修改。
-            #    放在 SummarizationMiddleware 之前，是为了拿到压缩前的完整消息；
-            #    因为排在前面，本轮触发后 SummarizationMiddleware 会把消息压下去，
-            #    下一轮 token 数自然回落到阈值以下，不需要额外的"已审计"标记防重复。
-            ConversationSummaryAuditMiddleware(
-                model=llm, store=summaries_store, trigger_tokens=SUMMARY_TRIGGER_TOKENS
-            ),
-            # 3) SummarizationMiddleware：管对话消息本身、喂给模型看的上下文。
-            #    累计 token 数超过 trigger 阈值时，自动把较早的消息压缩成一段
-            #    自由文本摘要，保留最近 keep 条原始消息，AI/Tool 消息对不会被
-            #    拆散。keep=("messages", 30)：摘要后至少保留最近 30 条原始
-            #    消息。这里已经有 /memories/AGENTS.md 承担"值得长期记住的
-            #    信息"，所以原始聊天记录被摘掉不会丢失真正重要的内容。
-            SummarizationMiddleware(
+            # 2) StructuredSummarizationMiddleware：管对话消息本身、喂给模型看的
+            #    上下文，同时把同一次调用产出的结构化摘要（ConversationSummarySchema）
+            #    落库到 conversation_summaries 表供审计/toB 查看页面对比（见该类的
+            #    docstring）。累计 token 数超过 trigger 阈值时，自动把较早的消息
+            #    压缩成结构化摘要格式化后的文本，保留最近 keep 条原始消息，AI/Tool
+            #    消息对不会被拆散。keep=("messages", 30)：摘要后至少保留最近 30
+            #    条原始消息。
+            StructuredSummarizationMiddleware(
                 model=llm,
                 trigger=("tokens", SUMMARY_TRIGGER_TOKENS),
                 keep=("messages", 30),
+                store=summaries_store,
             ),
             seed_default_memory,
             caller_prompt,

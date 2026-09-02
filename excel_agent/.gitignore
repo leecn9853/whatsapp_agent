@@ -15,6 +15,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Test caches
+.pytest_cache/
+.benchmarks/
+
 # LangGraph cache
 .langgraph_api
 
