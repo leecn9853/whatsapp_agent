@@ -100,9 +100,9 @@ function registerEvents(c) {
       timestamp: message.timestamp,
     };
 
-    // 目前只处理以「文件」形式发送的附件（type === 'document'）；图片/语音/贴纸等
+    // 处理「文件」（document）和「语音」（ptt）附件；图片/贴纸等
     // 其它带媒体的消息类型不下载、不转发，避免无意义的下载流量。
-    if (message.type === 'document' && message.hasMedia) {
+    if ((message.type === 'document' || message.type === 'ptt') && message.hasMedia) {
       try {
         const media = await message.downloadMedia();
         const sizeBytes = Buffer.byteLength(media.data, 'base64');

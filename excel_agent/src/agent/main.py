@@ -160,12 +160,6 @@ async def topic_gate(
 
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
     同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常 Excel 任务。
-
-    注意：这里直接拿 state["messages"] 发起独立的 llm.ainvoke() 调用，不经过
-    deepagents FilesystemMiddleware 包在主模型节点外面的那层多模态内容清洗（那层
-    只清洗发给主模型的临时 ModelRequest，不改 state 本身，且只在主模型节点生效）——
-    如果历史里有之前 read_file 预览生成图片留下的 image content block，会被原样
-    带进这次调用，直接把不支持图片输入的模型 400 掉。所以调用前要自己过滤一遍。
     """
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], HumanMessage):

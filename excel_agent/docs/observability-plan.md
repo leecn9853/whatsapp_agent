@@ -6,8 +6,8 @@
 
 ## 背景：现状有哪些坑
 
-- 代码里到处是 `logger.info/debug/warning`（`shared/engine.py`、`channels/whatsapp*/processor.py`、
-  `channels/whatsapp_meta/routes.py`、`agent/backends/docker_sandbox.py`），但**从未调用过
+- 代码里到处是 `logger.info/debug/warning`（`shared/engine.py`、`channels/whatsapp/processor.py`、
+  `agent/backends/docker_sandbox.py`），但**从未调用过
   `logging.basicConfig`/`dictConfig`**。root logger 默认级别是 `WARNING`，所以现在
   `.info()`/`.debug()` 在生产环境里**根本不会被打印**；能打印出来的 warning/error 也只是
   Python 的兜底 handler 输出到 stderr，没有时间戳、没有任何结构化字段，出问题基本没法查。
@@ -61,9 +61,8 @@
 
 ### 3. 补关键日志点
 
-- `channels/whatsapp_meta/routes.py` `receive_webhook` 和 `channels/whatsapp/routes.py`
-  `webhook`：在创建 run、`asyncio.create_task(process_message(...))` 前加一条 INFO
-  日志（phone/wamid 或 phone、thread_id）——现在"收到消息并开始处理"完全没有留痕，只有失败
+- `channels/whatsapp/routes.py` `webhook`：在创建 run、`asyncio.create_task(process_message(...))`
+  前加一条 INFO 日志（phone、thread_id）——现在"收到消息并开始处理"完全没有留痕，只有失败
   路径才有日志。
 - `shared/engine.py` `run_agent_turn`：
   - 用 `bind_run_context` 包住整个函数体。
@@ -125,8 +124,7 @@
 - `src/agent_server/__init__.py`（顶部调用 `configure_logging()`）
 - `src/agent_server/channels/__init__.py`（挂 `/health` 路由）
 - `src/agent_server/shared/engine.py`（`bind_run_context` + 开始/完成耗时日志）
-- `src/agent_server/channels/whatsapp_meta/routes.py`、`channels/whatsapp/routes.py`
-  （收到消息时加 INFO 日志）
+- `src/agent_server/channels/whatsapp/routes.py`（收到消息时加 INFO 日志）
 - `src/agent/backends/docker_sandbox.py`（`execute()` 加日志）
 - `src/agent_server/shared/runs_store.py`（新增 `alist_recent_runs`）
 - `src/agent_server/channels/tob/admin.py`（新增 `get_recent_runs` 路由）

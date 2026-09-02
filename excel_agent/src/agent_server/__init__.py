@@ -21,9 +21,6 @@ from src.agent_server.shared.runs_store import RunsStore
 from src.agent_server.shared.summaries_store import SummariesStore
 from src.agent_server.channels import routes
 from src.agent_server.channels.whatsapp.routes import lifespan as _whatsapp_lifespan
-from src.agent_server.channels.whatsapp_meta.routes import (
-    lifespan as _whatsapp_meta_lifespan,
-)
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -58,7 +55,7 @@ async def _lifespan(app: Starlette):
             _runtime.runs_store = runs_store
             _runtime.summaries_store = summaries_store
             _runtime.pool = pool
-            async with _whatsapp_lifespan(app), _whatsapp_meta_lifespan(app):
+            async with _whatsapp_lifespan(app):
                 yield
         finally:
             await pool.close()

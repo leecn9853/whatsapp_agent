@@ -24,6 +24,7 @@ from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.thread_ids import whatsapp_thread_id
 from src.agent_server.channels.whatsapp.client import send_text
 from src.agent_server.channels.whatsapp.processor import process_message, reset_thread
+from src.agent_server.channels.whatsapp.voice import process_voice_message
 
 # 目前只接收 Excel 文件；document 类型消息的后缀不在这个集合里就直接告知用户不支持，
 # 不创建 run、不调用 agent。
@@ -75,6 +76,17 @@ async def webhook(request: Request) -> JSONResponse:
             return JSONResponse({"ok": True})
 
         if media:
+            mimetype = (media.get("mimetype") or "").split(";")[0].strip().lower()
+            if data.get("type") == "ptt" or mimetype.startswith("audio/"):
+                audio_bytes = base64.b64decode(media["data"])
+                thread_id = whatsapp_thread_id(phone)
+                run_id = await _runtime.runs_store.acreate_run(thread_id)
+                task = asyncio.create_task(
+                    process_voice_message(phone, thread_id, run_id, audio_bytes, mimetype)
+                )
+                _track(task)
+                return JSONResponse({"ok": True})
+
             suffix = Path(media.get("filename") or "").suffix.lower()
             if suffix not in ALLOWED_EXCEL_EXTENSIONS:
                 with contextlib.suppress(Exception):

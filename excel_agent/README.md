@@ -15,9 +15,8 @@
   `output/`/`snapshots/` 目录回到宿主机。
 - **third_app**（仓库外的兄弟项目）：模拟第三方数据服务，提供成本报表/支付宝流水等接口，是
   两个报表技能的数据来源，必须单独启动。
-- **WhatsApp 接入**：生产走 Meta WhatsApp Cloud API（`whatsapp_meta` 渠道），本地调试可以接
-  `whatsapp_simulator`（仓库外兄弟项目，`whatsapp` 渠道），或者用不需要任何 WhatsApp 配置的
-  `tob` 调试接口直接测 agent。
+- **WhatsApp 接入**：通过 `whatsapp_simulator`（仓库外兄弟项目，`whatsapp` 渠道）接入
+  WhatsApp，或者用不需要任何 WhatsApp 配置的 `tob` 调试接口直接测 agent。
 
 更细的设计背景和已知问题见 [docs/skills-tools-refactor-plan.md](docs/skills-tools-refactor-plan.md)。
 
@@ -31,11 +30,9 @@
 - **仓库外的兄弟项目**（跟本仓库同级目录）：
   - `third_app`——**必需**，报表功能的数据来源，不启动会导致 `cost-report`/`alipay-report`
     直接报错。
-  - `whatsapp_simulator`——可选，只有要在本地走 `whatsapp`（非 Meta）渠道调试时才需要。
+  - `whatsapp_simulator`——可选，只有要在本地走 `whatsapp` 渠道调试时才需要。
 - **外部账号/密钥**（填进 `.env`）：
   - DeepSeek API Key、Tavily API Key——**必需**，agent 主模型和 `web_search` 工具要用。
-  - Meta WhatsApp Cloud API 的四项配置——只有接入生产 WhatsApp 时才需要，本地用 `tob`
-    调试接口或 `whatsapp_simulator` 都不需要填。
 
 ## 环境变量
 
@@ -47,11 +44,7 @@
   `http://host.docker.internal:8800`，不受这个变量影响。
 - **Postgres（必填，本地开发用 docker-compose 起的库）**：`POSTGRES_PASSWORD`、
   `DATABASE_URL`（两者要对得上，`DATABASE_URL` 里的密码就是 `POSTGRES_PASSWORD`）。
-- **WhatsApp（按需，二选一或都不填）**：
-  - 本地调试用 `whatsapp_simulator` 时填 `WHATSAPP_SIMULATOR_URL`。
-  - 接生产 Meta WhatsApp Cloud API 时填 `WHATSAPP_META_VERIFY_TOKEN`/
-    `WHATSAPP_META_APP_SECRET`/`WHATSAPP_META_ACCESS_TOKEN`/`WHATSAPP_META_PHONE_NUMBER_ID`
-    （Meta 开发者后台获取）。
+- **WhatsApp（按需）**：本地调试用 `whatsapp_simulator` 时填 `WHATSAPP_SIMULATOR_URL`。
 
 ## 启动步骤
 
@@ -84,6 +77,11 @@
    ```
 5. （可选）本地调试 `whatsapp` 渠道时，启动 `whatsapp_simulator`（在仓库外的
    `whatsapp_simulator` 目录，具体命令见该项目自己的说明）。
+   - 要处理语音消息还需要预下载语音转写模型（FunASR + SenseVoiceSmall，权重较大，不进
+     版本库），以及系统装好 `ffmpeg`（做语音格式转码）：
+     ```bash
+     uv run modelscope download --model iic/SenseVoiceSmall --local_dir ./models/SenseVoiceSmall
+     ```
 6. 启动 agent-server：
    ```bash
    make dev

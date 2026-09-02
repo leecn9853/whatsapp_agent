@@ -28,3 +28,6 @@ snapshots/
 
 # local SQLite persistence (checkpointer + store)
 data/
+
+# ASR 模型权重（体积大，不进版本库；首次部署按 README 说明手动下载到本地）
+models/

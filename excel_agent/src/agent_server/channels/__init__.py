@@ -10,6 +10,5 @@ from __future__ import annotations
 from src.agent_server.channels.tob.admin import routes as _tob_admin_routes
 from src.agent_server.channels.tob.routes import routes as _tob_routes
 from src.agent_server.channels.whatsapp.routes import routes as _whatsapp_routes
-from src.agent_server.channels.whatsapp_meta.routes import routes as _whatsapp_meta_routes
 
-routes = [*_whatsapp_routes, *_whatsapp_meta_routes, *_tob_routes, *_tob_admin_routes]
+routes = [*_whatsapp_routes, *_tob_routes, *_tob_admin_routes]
