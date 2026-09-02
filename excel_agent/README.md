@@ -4,6 +4,9 @@
 构建，用自建的 Docker 沙箱跑 LibreOffice 报表渲染等重型任务，模型只负责读技能说明、拼命令、
 把产物登记发给用户。
 
+> **完整启动流程**见仓库根目录 [README.md](../README.md)（`make dev`、Docker Desktop、首次初始化）。  
+> 本文档侧重 **excel_agent 子项目** 的环境变量与排障。
+
 ## 架构总览
 
 - **agent-server**（`src/agent_server`，Starlette）：对外的 HTTP 服务，接收 WhatsApp
@@ -35,7 +38,7 @@
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env`，按下面几组填：
+在 **`excel_agent/.env`** 配置（从 `.env.example` 复制，不要用仓库根目录的 `.env`）：
 
 - **模型/工具 Key（必填）**：`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`TAVILY_API_KEY`。
 - **third_app（必填）**：`THIRD_APP_BASE_URL`，本地直跑脚本/CLI 时用宿主机视角
@@ -47,45 +50,16 @@
 
 ## 启动步骤
 
-建议按下面的顺序来，但不是硬性要求：
-- **第 3 步（sandbox 容器）**：`DockerSandbox` 在 agent-server 启动时会等待容器进入
-  `running` 状态，默认轮询等待 30 秒，容器稍晚起来也不会导致 agent-server 崩溃；但如果
-  超过 30 秒 sandbox 还没就绪，agent-server 会直接报错退出，提示先执行
-  `docker compose up -d sandbox`。
-- **第 4 步（third_app）**：不是在 agent-server 启动时检查的，只有实际触发
-  `cost-report`/`alipay-report` 报表生成时才会去连它，所以 third_app 晚启动不会导致
-  agent-server 启动失败，只会导致报表功能报错。
+**推荐**：在仓库根目录 `make dev` 或 `make agent`（会先由根目录脚本 / 你手动 `make infra` 拉起 Docker）。
 
-1. 安装依赖：
-   ```bash
-   uv sync
-   ```
-2. 配置环境变量：
-   ```bash
-   cp .env.example .env
-   # 编辑 .env，至少填好上面"环境变量"里标"必填"的几项
-   ```
-3. 启动 Postgres 和 Docker 沙箱：
-   ```bash
-   docker compose up -d postgres sandbox
-   ```
-   `sandbox` 首次启动会构建镜像（装 LibreOffice + CJK 字体），比较慢，正常现象。
-4. 启动 `third_app`（在仓库根目录的 `third_app/`）：
-   ```bash
-   cd ../third_app && uv run python main.py
-   ```
-5. （可选）本地调试 `whatsapp` 渠道时，启动 `whatsapp_simulator`（在仓库根目录的
-   `whatsapp_simulator/`，具体命令见该项目 README）。
-   - 要处理语音消息还需要预下载语音转写模型（FunASR + SenseVoiceSmall，权重较大，不进
-     版本库），以及系统装好 `ffmpeg`（做语音格式转码）：
-     ```bash
-     uv run modelscope download --model iic/SenseVoiceSmall --local_dir ./models/SenseVoiceSmall
-     ```
-6. 启动 agent-server：
-   ```bash
-   make dev
-   ```
-   默认监听 `0.0.0.0:8200`。
+仅启动本子项目时：
+
+1. `uv sync`
+2. `cp .env.example .env` 并填写
+3. `docker compose up -d postgres sandbox`（或在根目录 `make infra`）
+4. `make dev` → 监听 `0.0.0.0:8200`
+
+`third_app`、`whatsapp_simulator` 需在其它终端单独启动，见根目录 README。
 
 ## 验证是否跑起来了
 
@@ -123,6 +97,9 @@
 
 ## 常见问题
 
+- **`role "excel_agent" does not exist`**：本机 Homebrew Postgres 占用了 5432，连错库了。执行
+  `brew services stop postgresql@18`（如有 @16 也停），确认 `docker ps` 里有
+  `excel_agent-postgres-1`，再重启 agent。
 - **agent-server 启动时报 `DockerSandbox`/容器相关错误**：等了 30 秒 sandbox 容器还没进入
   `running` 状态——容器没起来，或者被删过/改过名字。回到"启动步骤"第 3 步重新
   `docker compose up -d postgres sandbox`，确认容器在跑（`docker compose ps`）之后重启

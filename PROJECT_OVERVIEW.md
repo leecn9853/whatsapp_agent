@@ -43,6 +43,38 @@ whatsapp_agent/                 # monorepo 根目录
 
 ---
 
+## 当前阶段（Demo）
+
+| 维度 | 现状 |
+|------|------|
+| 目标 | 内网跑通 WhatsApp → Agent → 报表/图表 主链路 |
+| 部署 | 单机本地或单机服务器，服务用 `localhost` 互访 |
+| 鉴权 | **未做** webhook / simulator API / third_app 鉴权（需求确定后再加） |
+| 白名单 | demo 可留空（不限制号码）；上线前必须配置 `MESSAGE_WHITELIST` |
+| third_app | 开发用 mock；上线报表技能时换真实业务 API |
+| content_agent | 实验目录，忽略 |
+
+生产加固（鉴权、防火墙、密钥轮换、systemd 编排等）**不在当前范围**，待产品需求明确后迭代。
+
+---
+
+## AI 技术栈（deepagents）
+
+`excel_agent` 基于官方 [deepagents](https://github.com/langchain-ai/deepagents) 的 **`create_deep_agent()`** 标准 API 构建，不是 fork 或自研框架。主要组成：
+
+| 能力 | 实现 |
+|------|------|
+| Agent 入口 | `create_deep_agent(model, tools, middleware, skills, memory, backend, …)` |
+| 会话持久化 | LangGraph `AsyncPostgresSaver` + `AsyncPostgresStore` |
+| 技能 | `skills=["/workspace/skills/"]`，沙箱内 `execute` 跑 CLI 脚本 |
+| 长期记忆 | `memory=["/memories/AGENTS.md"]`，按 WhatsApp 用户隔离 |
+| 子代理 | `web-search-agent`（联网调研） |
+| 执行环境 | `DockerSandbox`（LibreOffice 报表）+ 宿主机 `input/`/`output/`（Excel 工具） |
+
+业务定制中间件：`topic_gate`（跑题拦截）、`StructuredSummarizationMiddleware`（摘要落库）。代码入口：`excel_agent/src/agent/main.py` → `build_agent()`。
+
+---
+
 ## WhatsApp 接入方案
 
 **已确定：统一使用 `whatsapp_simulator`（whatsapp-web.js）作为 WhatsApp 接入方式。**
@@ -294,13 +326,15 @@ uv run python main.py   # 0.0.0.0:8800
 
 ## 服务间依赖与启动顺序
 
-可用仓库根目录 `make dev` 一键并行启动，或按下面顺序手动启动：
+**日常开发（推荐）**：打开 Docker Desktop → 仓库根目录 `make dev`（已包含 `docker compose up` + 三个业务服务）。
+
+手动分步时：
 
 ```
-1. third_app          → 报表数据源（跑报表前必须就绪）
-2. docker compose     → postgres + sandbox（agent-server 启动等待 sandbox 最多 30s）
+1. docker compose     → postgres + sandbox（make infra）
+2. third_app          → 报表 mock（跑报表技能时需要）
 3. excel_agent        → make dev (:8200)
-4. whatsapp_simulator → WEBHOOK_URL + MESSAGE_WHITELIST，扫码登录
+4. whatsapp_simulator → npm start (:3000)，首次扫码
 ```
 
 **验证**：
@@ -337,7 +371,14 @@ make health                                                          # 或根目
 
 ## 已知设计约束
 
-- **仅白名单用户可触发**：非白名单消息被 simulator 静默忽略
+**Demo 阶段已知、可接受：**
+
+- HTTP 接口（`/webhook`、simulator 发消息 API、`third_app`）**暂无鉴权**，仅适合本机/内网 demo
+- `MESSAGE_WHITELIST` 留空时不限制号码（方便调试）
+
+**业务规则：**
+
+- **仅白名单用户可触发**（配置后）：非白名单消息被 simulator 静默忽略
 - **群聊默认不回复**：`@g.us` 结尾的 JID 直接 ack，不触发 Agent
 - **文件类型限制**：WhatsApp 渠道仅接受 `.xlsx`/`.xls`
 - **单文件大小限制**：simulator 默认 `MAX_MEDIA_SIZE_MB=20`
@@ -345,14 +386,20 @@ make health                                                          # 或根目
 - **报表技能与通用 Excel 工具分离**：cost/alipay 走固定 skill + third_app，不走 `inspect_excel` 探索流程
 - **非官方 WhatsApp 协议**：内部小范围使用可接受，不建议对外大规模商用
 
+**本地开发踩坑：**
+
+- Mac 若装了 Homebrew `postgresql@18` 等，会占用 `5432`，导致连错库、报 `role "excel_agent" does not exist` → `brew services stop postgresql@18`
+- simulator 本机无 Chrome 时需 `npm run install-browser`（见 `whatsapp_simulator/README.md`）
+
 ---
 
 ## 相关文档索引
 
 | 文档 | 路径 | 内容 |
 |------|------|------|
-| 快速入口 | `README.md` | 启动命令、跨服务配置对齐 |
-| excel_agent 启动与排障 | `excel_agent/README.md` | 环境变量、启动步骤、日志与健康检查 |
+| **快速入口（先看这个）** | `README.md` | 首次初始化、日常 `make dev`、常见问题 |
+| 架构与 Demo 约束 | `PROJECT_OVERVIEW.md` | 本文档 |
+| excel_agent 启动与排障 | `excel_agent/README.md` | 环境变量、健康检查、日志 |
 | 可观测性设计参考 | `excel_agent/docs/observability-plan.md` | 日志/健康检查方案（已落地） |
 | 多渠道设计（备选） | `excel_agent/docs/multi-channel-design.md` | toC Web 前端接入方案 |
 | whatsapp_simulator API | `whatsapp_simulator/README.md` | REST 接口、Webhook、白名单 |
