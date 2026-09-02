@@ -357,7 +357,7 @@ function renderSummaryCard(s) {
       `<dt>已确定的结论/偏好</dt><dd>${escapeHtml((s.decisions || []).join('\\n') || '（无）')}</dd>` +
       `<dt>待完成事项</dt><dd>${escapeHtml((s.next_steps || []).join('\\n') || '（无）')}</dd>` +
       `<dt>生成/引用的文件</dt><dd>${escapeHtml((s.artifacts || []).join('\\n') || '（无）')}</dd>` +
-      `<dt>触发时 token 数 / 时间</dt><dd>${s.token_count_before} / ${escapeHtml(s.created_at)}</dd>` +
+      `<dt>触发时 token 数 / 时间</dt><dd>${s.token_count_before} / ${escapeHtml(beijingTimeLabel(s.created_at))}</dd>` +
     '</dl>' +
     `<button class="compare-btn" data-summary-id="${escapeHtml(s.id)}">对比原始消息</button>` +
     `<div class="summary-compare-slot" data-open="0"></div>` +
@@ -442,7 +442,7 @@ async function renderRunsTab(body) {
   for (const r of runs) {
     html += `<tr><td>${escapeHtml(r.run_id)}</td><td class="status-${escapeHtml(r.status)}">${escapeHtml(r.status)}</td>` +
       `<td>${r.attempt}</td><td>${escapeHtml(r.error || '')}</td>` +
-      `<td>${escapeHtml(r.created_at)}</td><td>${escapeHtml(r.updated_at)}</td></tr>`;
+      `<td>${escapeHtml(beijingTimeLabel(r.created_at))}</td><td>${escapeHtml(beijingTimeLabel(r.updated_at))}</td></tr>`;
   }
   html += '</table>';
   body.innerHTML = html;

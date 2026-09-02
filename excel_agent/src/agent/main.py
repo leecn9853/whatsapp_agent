@@ -236,7 +236,7 @@ async def topic_gate(
 # todos、待处理的工具调用等）
 # 摘要触发阈值：StructuredSummarizationMiddleware 用这个数字判断何时压缩对话，
 # 提成常量避免散落的字面量。
-SUMMARY_TRIGGER_TOKENS = 4000
+SUMMARY_TRIGGER_TOKENS = 10000
 
 
 def build_agent(checkpointer, store, summaries_store):
@@ -278,13 +278,16 @@ def build_agent(checkpointer, store, summaries_store):
             #    上下文，同时把同一次调用产出的结构化摘要（ConversationSummarySchema）
             #    落库到 conversation_summaries 表供审计/toB 查看页面对比（见该类的
             #    docstring）。累计 token 数超过 trigger 阈值时，自动把较早的消息
-            #    压缩成结构化摘要格式化后的文本，保留最近 keep 条原始消息，AI/Tool
-            #    消息对不会被拆散。keep=("messages", 30)：摘要后至少保留最近 30
-            #    条原始消息。
+            #    压缩成结构化摘要格式化后的文本，保留最近 keep 内的原始消息，AI/Tool
+            #    消息对不会被拆散。keep 必须用跟 trigger 同一个度量单位（tokens）：
+            #    这里的消息里混着 skill 目录清单/memory 文件/ls 结果这类单条 token
+            #    很重的内容，如果 keep 按消息条数算，保留下来的这几条很容易自己就
+            #    超过 trigger 阈值，导致压缩完下一步立刻又触发压缩，陷入摘要反复
+            #    压缩自己产出的占位摘要的连锁反应。
             StructuredSummarizationMiddleware(
                 model=llm,
                 trigger=("tokens", SUMMARY_TRIGGER_TOKENS),
-                keep=("messages", 30),
+                keep=("tokens", 4000),
                 store=summaries_store,
             ),
             seed_default_memory,

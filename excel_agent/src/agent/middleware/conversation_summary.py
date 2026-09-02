@@ -1,15 +1,8 @@
 """结构化对话摘要：Schema、prompt 常量、格式化函数，以及驱动实际压缩的中间件。
 
-以前这里是一个独立于 SummarizationMiddleware 的审计中间件：SummarizationMiddleware
-（langchain.agents.middleware）负责把对话历史压缩成自由文本喂给模型，这里另起一次
-模型调用生成结构化摘要落库，两者互不调用，只共享同一个 token 触发阈值——这导致每次
-触发都是两次几乎重复的模型调用，而且真正喂给模型看的是信息密度更低的自由文本，
-结构化摘要（更贴合这个 Excel 报表助手的场景，比如 artifacts/excel_context 字段）
-反而只用于审计，没有被拿来驱动模型实际看到的上下文。
-
-现在合并成一次调用：下面的 `StructuredSummarizationMiddleware` 直接用
-`ConversationSummarySchema` 生成结构化摘要，`render_summary_text` 把它格式化成喂给
-模型的替换文本，同一次调用产出的结构化字段再落库审计。
+`StructuredSummarizationMiddleware` 用 `ConversationSummarySchema` 生成结构化摘要，
+`render_summary_text` 把它格式化成喂给模型的替换文本，同一次调用产出的结构化字段再
+落库（`summaries_store`）供审计对比压缩前后的内容。
 """
 
 from __future__ import annotations
@@ -111,17 +104,6 @@ class StructuredSummarizationMiddleware(SummarizationMiddleware[Any, ContextSche
     供 toB 查看页面审计对比（以前是另一个独立中间件单独再调一次模型做落库这件事，
     等于每次触发都打两次几乎重复的模型调用；现在合并成一次）。
 
-    为什么类名要跟基类不同（不能叫回 `SummarizationMiddleware`）：deepagents 的
-    `_DeepAgentsSummarizationMiddleware`（deepagents/middleware/summarization.py）
-    把自己的 `.name` 属性显式伪装成公开名字 `"SummarizationMiddleware"`。
-    `create_deep_agent` 的 `_apply_custom_middleware`（deepagents/graph.py）按 `.name`
-    字符串匹配自定义中间件：一旦撞名，就把我们写的中间件原地替换进内置核心栈的
-    位置，而不是按 `middleware=[...]` 里写的顺序拼接——这会把这个中间件的实例悄悄
-    挪到 `topic_gate` 之前执行，导致 `topic_gate` 看到的永远是已经被压缩过的
-    `messages`，判断依据变少。子类化只是为了让 `.name` 变成子类名（基类
-    `AgentMiddleware.name` 默认返回 `type(self).__name__`），不再被当成"核心栈同名
-    成员"被抽出去重排位置；机制完全继承自基类，不涉及本类自己的改动。
-
     只覆写异步路径 `abefore_model`：这个项目里 agent 只通过
     `agent_server/shared/engine.py` 的 `agent.astream` 驱动，没有任何地方同步调用
     `agent.invoke`，同步 `before_model` 在这个部署里不可达；而且 `SummariesStore`
@@ -201,7 +183,19 @@ class StructuredSummarizationMiddleware(SummarizationMiddleware[Any, ContextSche
 
         trimmed = self._trim_messages_for_summary(messages_to_summarize)
         if not trimmed:
-            return "此前的对话过长，无法生成摘要。"
+            # 基类 trim_messages（start_on="human"）把整段裁空时，仍然要落库：
+            # 这恰恰是内容被压缩掉最多的一次，审计页面最需要看到"压缩前"是什么，
+            # 不能因为没生成摘要就跳过记录。
+            fallback_summary = ConversationSummarySchema(
+                session_intent="（此前对话过长，未能生成摘要）"
+            )
+            await self.store.acreate_summary(
+                thread_id=runtime.context.user_id or "debug",
+                token_count_before=token_count_before,
+                raw_messages=messages_to_dict(messages_to_summarize),
+                summary=fallback_summary,
+            )
+            return render_summary_text(fallback_summary)
         sanitized = strip_multimodal_content(trimmed)
 
         raw_summary = await self._structured_summary_model.ainvoke(
