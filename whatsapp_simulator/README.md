@@ -2,6 +2,8 @@
 
 基于 [whatsapp-web.js](https://github.com/wwebjs/whatsapp-web.js) 的 Express 服务，把真实的 WhatsApp Web 会话（Puppeteer 驱动，需扫码登录）封装成 HTTP 接口 + Webhook 推送。
 
+> 完整启动见仓库根目录 [README.md](../README.md)。配置写在 **`whatsapp_simulator/.env`**。
+
 ## 启动
 
 ```bash
@@ -10,6 +12,14 @@ npm install
 cp .env.example .env
 npm start
 ```
+
+首次启动若报 **Could not find Chrome**，需先安装 Puppeteer 用的浏览器（本机没装 Google Chrome 时必做）：
+
+```bash
+npm run install-browser
+```
+
+然后重新 `npm start`。若已安装本机 Chrome，也可在 `.env` 里设置 `PUPPETEER_EXECUTABLE_PATH`（见下方环境变量表）。
 
 首次启动会打印二维码（也可 `GET /qr` 获取），扫码登录后会话持久化在 `.wwebjs_auth/`，重启无需再扫。
 

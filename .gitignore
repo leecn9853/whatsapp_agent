@@ -1,3 +1,4 @@
+# 本地/历史目录（不进仓库）
 news_agent/
 examples/
 excel_agent_backup/
@@ -5,14 +6,39 @@ overview_frontend/
 
 # OS
 .DS_Store
+Thumbs.db
 
-# Python
+# Python（各子项目兜底）
 __pycache__/
-*.pyc
+*.py[oc]
+*.egg-info/
+build/
+dist/
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Node
 node_modules/
 
-# Env
+# Env（保留 .env.example）
 .env
+.env.*
+!.env.example
+
+# 日志
+*.log
+
+# IDE
+.idea/
+.vscode/mcp.json
+
+# WhatsApp simulator 运行时
+.wwebjs_auth/
+.wwebjs_cache/
+
+# LangGraph 本地缓存
+.langgraph_api/
