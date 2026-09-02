@@ -13,12 +13,12 @@
 - **Docker 沙箱**（`docker-compose.yml` 里的 `sandbox` service）：装了 LibreOffice 的长驻
   容器，`cost-report`/`alipay-report` 两个技能的 CLI 脚本在这里跑，产物通过 bind mount 出的
   `output/`/`snapshots/` 目录回到宿主机。
-- **third_app**（仓库外的兄弟项目）：模拟第三方数据服务，提供成本报表/支付宝流水等接口，是
+- **third_app**（同仓库 `third_app/`）：模拟第三方数据服务，提供成本报表/支付宝流水等接口，是
   两个报表技能的数据来源，必须单独启动。
-- **WhatsApp 接入**：通过 `whatsapp_simulator`（仓库外兄弟项目，`whatsapp` 渠道）接入
+- **WhatsApp 接入**：通过同仓库 `whatsapp_simulator`（`whatsapp` 渠道）接入
   WhatsApp，或者用不需要任何 WhatsApp 配置的 `tob` 调试接口直接测 agent。
 
-更细的设计背景和已知问题见 [docs/skills-tools-refactor-plan.md](docs/skills-tools-refactor-plan.md)。
+更细的设计背景见仓库根目录 [PROJECT_OVERVIEW.md](../PROJECT_OVERVIEW.md)。
 
 ## 外部依赖
 
@@ -27,9 +27,8 @@
 - **运行环境**：[uv](https://docs.astral.sh/uv/)（管理 Python 版本和依赖，Python 版本见
   `.python-version`，不需要单独装）、**Docker Desktop**（提供 Docker Engine，跑
   `postgres`/`sandbox` 两个容器）。
-- **仓库外的兄弟项目**（跟本仓库同级目录）：
-  - `third_app`——**必需**，报表功能的数据来源，不启动会导致 `cost-report`/`alipay-report`
-    直接报错。
+- **仓库内的兄弟服务**（均在 monorepo 根目录下）：
+  - `third_app`——**必需**（跑报表时），报表功能的数据来源。
   - `whatsapp_simulator`——可选，只有要在本地走 `whatsapp` 渠道调试时才需要。
 - **外部账号/密钥**（填进 `.env`）：
   - DeepSeek API Key、Tavily API Key——**必需**，agent 主模型和 `web_search` 工具要用。
@@ -71,12 +70,12 @@
    docker compose up -d postgres sandbox
    ```
    `sandbox` 首次启动会构建镜像（装 LibreOffice + CJK 字体），比较慢，正常现象。
-4. 启动 `third_app`（在仓库外的 `third_app` 目录）：
+4. 启动 `third_app`（在仓库根目录的 `third_app/`）：
    ```bash
    cd ../third_app && uv run python main.py
    ```
-5. （可选）本地调试 `whatsapp` 渠道时，启动 `whatsapp_simulator`（在仓库外的
-   `whatsapp_simulator` 目录，具体命令见该项目自己的说明）。
+5. （可选）本地调试 `whatsapp` 渠道时，启动 `whatsapp_simulator`（在仓库根目录的
+   `whatsapp_simulator/`，具体命令见该项目 README）。
    - 要处理语音消息还需要预下载语音转写模型（FunASR + SenseVoiceSmall，权重较大，不进
      版本库），以及系统装好 `ffmpeg`（做语音格式转码）：
      ```bash
@@ -109,6 +108,18 @@
     -H "Content-Type: application/json" \
     -d '{"message": "你好"}'
   ```
+- 健康检查与依赖状态：
+  ```bash
+  curl http://127.0.0.1:8200/health
+  ```
+- 日志：由 `LOG_LEVEL` 环境变量控制（默认 `INFO`），输出到 stdout。每条日志自动带上
+  `run_id`/`thread_id`，可用 `grep run_id=xxx` 串联一次消息处理的完整链路。
+- 最近失败 run 概览（仅本机可访问）：
+  ```bash
+  curl 'http://127.0.0.1:8200/v1/tob/admin/runs/recent?minutes=60'
+  ```
+
+也可在仓库根目录执行 `make health` 一次性检查所有服务。
 
 ## 常见问题
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -24,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from src.context import ContextSchema
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.files import files_saved_this_turn
+from src.agent_server.shared.log_context import bind_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -109,50 +111,56 @@ async def run_agent_turn(
     """
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     last_error: Exception | None = None
+    started_at = time.monotonic()
 
     await _runtime.runs_store.amark_running(run_id)
 
-    for attempt in range(1, AGENT_MAX_ATTEMPTS + 1):
-        await _runtime.runs_store.arecord_attempt(run_id, attempt)
+    with bind_run_context(run_id, thread_id):
+        logger.info("开始处理消息")
 
-        input_: InputAgentState | None
-        if attempt == 1:
-            input_ = {"messages": [HumanMessage(content=message)]}
-        else:
-            input_ = None
-            snapshot = await _runtime.agent.aget_state(config)
-            if not snapshot.values.get("messages"):
+        for attempt in range(1, AGENT_MAX_ATTEMPTS + 1):
+            await _runtime.runs_store.arecord_attempt(run_id, attempt)
+
+            input_: InputAgentState | None
+            if attempt == 1:
                 input_ = {"messages": [HumanMessage(content=message)]}
+            else:
+                input_ = None
+                snapshot = await _runtime.agent.aget_state(config)
+                if not snapshot.values.get("messages"):
+                    input_ = {"messages": [HumanMessage(content=message)]}
 
-        try:
-            async with asyncio.timeout(AGENT_ATTEMPT_TIMEOUT_SECONDS):
-                async for name in _stream_tool_calls(input_, config, context):
-                    yield name
+            try:
+                async with asyncio.timeout(AGENT_ATTEMPT_TIMEOUT_SECONDS):
+                    async for name in _stream_tool_calls(input_, config, context):
+                        yield name
 
-            snapshot = await _runtime.agent.aget_state(config)
-            messages = snapshot.values["messages"]
-            await _runtime.runs_store.amark_success(run_id)
-            yield RunResult(reply=messages[-1].content, files=files_saved_this_turn(messages))
-            return
-        except TimeoutError:
-            last_error = TimeoutError(f"agent 执行超过 {AGENT_ATTEMPT_TIMEOUT_SECONDS}s")
-        except Exception as e:
-            last_error = e
+                snapshot = await _runtime.agent.aget_state(config)
+                messages = snapshot.values["messages"]
+                await _runtime.runs_store.amark_success(run_id)
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                logger.info("处理完成，耗时 %dms，尝试 %d 次", elapsed_ms, attempt)
+                yield RunResult(reply=messages[-1].content, files=files_saved_this_turn(messages))
+                return
+            except TimeoutError:
+                last_error = TimeoutError(f"agent 执行超过 {AGENT_ATTEMPT_TIMEOUT_SECONDS}s")
+            except Exception as e:
+                last_error = e
 
-        logger.warning(
-            "第 %d/%d 次调用 agent 失败（thread_id=%s）：%s",
-            attempt,
-            AGENT_MAX_ATTEMPTS,
-            thread_id,
-            last_error,
-            exc_info=last_error,
+            logger.warning(
+                "第 %d/%d 次调用 agent 失败（thread_id=%s）：%s",
+                attempt,
+                AGENT_MAX_ATTEMPTS,
+                thread_id,
+                last_error,
+                exc_info=last_error,
+            )
+            if attempt < AGENT_MAX_ATTEMPTS:
+                await asyncio.sleep(AGENT_RETRY_BACKOFF_SECONDS * attempt)
+
+        assert last_error is not None
+        await _runtime.runs_store.amark_error(
+            run_id, f"{type(last_error).__name__}: {last_error}" if str(last_error) else type(last_error).__name__
         )
-        if attempt < AGENT_MAX_ATTEMPTS:
-            await asyncio.sleep(AGENT_RETRY_BACKOFF_SECONDS * attempt)
-
-    assert last_error is not None
-    await _runtime.runs_store.amark_error(
-        run_id, f"{type(last_error).__name__}: {last_error}" if str(last_error) else type(last_error).__name__
-    )
-    files = await _files_from_checkpoint(config)
-    raise RunFailed(last_error, files) from last_error
+        files = await _files_from_checkpoint(config)
+        raise RunFailed(last_error, files) from last_error
