@@ -1,6 +1,8 @@
 import os
+import re
 import warnings
 from pathlib import Path
+import yaml
 from dotenv import load_dotenv
 from pydantic import SecretStr
 from langchain_openai import ChatOpenAI
@@ -132,14 +134,57 @@ async def seed_default_memory(
     return None
 
 
-_OFF_TOPIC_REPLY = "这个我帮不上忙哦～我主要负责 Excel 表格和图表处理，这类问题建议问问其他 AI 助手。"
+_OFF_TOPIC_REPLY = "这个我帮不上忙哦～ 这类问题建议问问其他 AI 助手。"
+
+# 技能目录跟 docker-compose.yml 里挂进沙箱的 /workspace/skills 是同一份宿主机目录
+# （见 `./src/agent/skills:/workspace/skills:ro`），这里直接读本地文件，不通过
+# backend/沙箱那一套（避免依赖 Docker 可用性、避免依赖 SkillsMiddleware 的
+# before_agent 是否已经在本轮跑过写好 state["skills_metadata"]）。topic_gate 拿到的
+# 技能范围因此始终是"当前实际挂载的技能"，技能增减时不需要手动同步这段 prompt。
+_SKILLS_DIR = SRC_DIR / "skills"
+
+
+def _load_skill_summaries() -> list[dict[str, str]]:
+    summaries: list[dict[str, str]] = []
+    if not _SKILLS_DIR.is_dir():
+        return summaries
+    for skill_dir in sorted(_SKILLS_DIR.iterdir()):
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        match = re.match(r"^---\s*\n(.*?)\n---\s*\n", skill_md.read_text(encoding="utf-8"), re.DOTALL)
+        if not match:
+            continue
+        try:
+            frontmatter = yaml.safe_load(match.group(1))
+        except yaml.YAMLError:
+            continue
+        if not isinstance(frontmatter, dict):
+            continue
+        name = str(frontmatter.get("name", "")).strip()
+        description = str(frontmatter.get("description", "")).strip()
+        if name and description:
+            summaries.append({"name": name, "description": description})
+    return summaries
+
+
+_SKILL_SUMMARIES = _load_skill_summaries()
+
+
+def _format_skills_for_gate(skills: list[dict[str, str]]) -> str:
+    if not skills:
+        return "（当前没有加载到任何技能说明）"
+    return "\n".join(f"- {s['name']}：{s['description']}" for s in skills)
+
 
 _TOPIC_GATE_SYSTEM_PROMPT = (
+    "你的任务范围严格限定在下面这些技能覆盖的场景内：\n\n"
+    f"{_format_skills_for_gate(_SKILL_SUMMARIES)}\n\n"
     "判断以下对话里用户最新这句话是否满足下面任一条件：\n"
-    "1) 是 Excel 表格处理/图表生成相关的请求（包括基于前面上下文对已有任务的"
+    "1) 请求内容落在上面某个技能描述的场景范围内（包括基于前面上下文对已有任务的"
     "追问、调整）；\n"
     "2) 是打招呼、问候、寒暄、感谢、告别、确认收到、闲聊式的礼貌用语等社交性"
-    "发言，且不构成一个具体的、与 Excel 无关的知识/信息请求。\n"
+    "发言，且不构成一个具体的、超出上面技能范围的知识/信息请求。\n"
     "只要满足其中一条就回答 yes，否则回答 no。只回答 yes 或 no，不要解释。"
 )
 
@@ -151,15 +196,17 @@ async def topic_gate(
     """在主模型被调用前，先用一次不绑工具的独立 LLM 调用判断本轮是否跑题；跑题就
     直接 jump_to="end"，主模型和工具全程不会被调用。
 
-    为什么需要这一步：system_prompt 里"只处理 Excel 任务"这条规则单靠主模型自觉
-    并不可靠。这里单独问一句 yes/no（这次调用没有绑定任何工具）来兜底。
+    为什么需要这一步：system_prompt 里"只处理技能范围内任务"这条规则单靠主模型
+    自觉并不可靠。这里单独问一句 yes/no（这次调用没有绑定任何工具）来兜底。
 
-    判断标准比"是不是 Excel 任务"更宽：打招呼/寒暄/感谢/告别等社交性发言也算
-    on-topic（放行给主模型走正常礼貌回应），只有具体的、与 Excel 无关的知识/
-    信息请求才会被拦下——否则用户发个"你好"也会收到 _OFF_TOPIC_REPLY，体验很怪。
+    判断标准不是死板的关键词匹配，而是对照 `_SKILL_SUMMARIES`（本地技能目录的
+    实际 name/description）判断请求是否落在技能范围内；打招呼/寒暄/感谢/告别等
+    社交性发言也算 on-topic（放行给主模型走正常礼貌回应），只有具体的、超出技能
+    范围的知识/信息请求才会被拦下——否则用户发个"你好"也会收到 _OFF_TOPIC_REPLY，
+    体验很怪。
 
     只在本轮第一次进入模型时判断（即最后一条消息是用户刚发的 HumanMessage），避免对
-    同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常 Excel 任务。
+    同一轮里"工具结果之后的续跑"重复判断，误伤正在执行中的正常任务。
     """
     messages = state["messages"]
     if not messages or not isinstance(messages[-1], HumanMessage):
