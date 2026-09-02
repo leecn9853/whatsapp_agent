@@ -90,7 +90,10 @@ class DockerSandbox(BaseSandbox):
             shell_cmd = f"timeout -k 5 {timeout}s sh -c {shlex.quote(command)}"
         else:
             shell_cmd = command
+        preview = command if len(command) <= 200 else f"{command[:200]}…"
+        started_at = time.monotonic()
         result = self._container.exec_run(["sh", "-c", shell_cmd], demux=True)
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
         # docker-py 没有类型标注，exec_run 的 output 字段推断不出 demux=True 时
         # 固定是 (stdout, stderr) 二元组；这里按实际语义显式标注。
         stdout, stderr = cast("tuple[bytes | None, bytes | None]", result.output)
@@ -99,6 +102,19 @@ class DockerSandbox(BaseSandbox):
             output += ("\n" if output else "") + stderr.decode("utf-8", errors="replace")
         if timeout is not None and result.exit_code == 124:
             output += ("\n" if output else "") + f"[DockerSandbox] 命令执行超过 {timeout}s，已被终止。"
+        if result.exit_code == 0:
+            logger.debug(
+                "sandbox 命令完成 exit_code=0 耗时 %dms: %s",
+                elapsed_ms,
+                preview,
+            )
+        else:
+            logger.warning(
+                "sandbox 命令失败 exit_code=%s 耗时 %dms: %s",
+                result.exit_code,
+                elapsed_ms,
+                preview,
+            )
         return ExecuteResponse(output=output, exit_code=result.exit_code)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

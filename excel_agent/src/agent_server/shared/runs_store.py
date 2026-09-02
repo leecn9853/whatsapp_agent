@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -85,5 +85,17 @@ class RunsStore:
                     "SELECT run_id, status, attempt, error, created_at, updated_at "
                     "FROM runs WHERE user_id = %s ORDER BY created_at DESC",
                     (thread_id,),
+                )
+                return await cur.fetchall()
+
+    async def alist_recent_runs(self, minutes: int, *, limit: int = 200) -> list[dict]:
+        """按时间倒序列出最近 N 分钟内所有 thread 的 run 记录。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT run_id, user_id AS thread_id, status, attempt, error, created_at, updated_at "
+                    "FROM runs WHERE created_at >= %s ORDER BY created_at DESC LIMIT %s",
+                    (cutoff, limit),
                 )
                 return await cur.fetchall()

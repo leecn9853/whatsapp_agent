@@ -63,3 +63,31 @@ curl -X POST http://localhost:3000/messages \
 | `message_ack` | `{ id, to, ack }` |
 
 推送失败自动重试 3 次，仍失败只记日志，不影响客户端本身。
+
+## 运维：掉线排查
+
+simulator 基于 WhatsApp Web 非官方协议，可能因 WhatsApp 更新或会话过期而掉线。用户发消息无响应时：
+
+1. 检查连接状态：
+   ```bash
+   curl http://localhost:3000/status
+   ```
+   `state` 应为 `READY`；否则需要重新扫码或重启会话。
+
+2. 获取二维码重新登录：
+   ```bash
+   curl http://localhost:3000/qr -o qr.png && open qr.png   # macOS
+   ```
+   或重启服务后看终端输出的二维码。
+
+3. 重启会话（不删 `.wwebjs_auth/`）：
+   ```bash
+   curl -X POST http://localhost:3000/session/restart
+   ```
+
+4. 完全登出后重新扫码：
+   ```bash
+   curl -X POST http://localhost:3000/session/logout
+   ```
+
+生产环境可用 cron 定时 `curl /status`，`state` 非 `READY` 时通知运维（本仓库未内置告警，由部署侧自行配置）。

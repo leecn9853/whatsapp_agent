@@ -73,6 +73,14 @@ async def get_runs(request: Request) -> JSONResponse:
 
 
 @local_only
+async def get_recent_runs(request: Request) -> JSONResponse:
+    minutes = int(request.query_params.get("minutes", "60"))
+    limit = int(request.query_params.get("limit", "200"))
+    runs = await _runtime.runs_store.alist_recent_runs(minutes, limit=limit)
+    return JSONResponse(runs)
+
+
+@local_only
 async def get_memory(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
     content = await aget_memory(_runtime.store, thread_id)

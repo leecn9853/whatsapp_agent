@@ -12,6 +12,7 @@ run_agent_turn 相关函数时要转成 `thread_ids.whatsapp_thread_id(phone)` �
 import asyncio
 import base64
 import contextlib
+import logging
 from pathlib import Path
 
 import httpx
@@ -25,6 +26,8 @@ from src.agent_server.shared.thread_ids import whatsapp_thread_id
 from src.agent_server.channels.whatsapp.client import send_text
 from src.agent_server.channels.whatsapp.processor import process_message, reset_thread
 from src.agent_server.channels.whatsapp.voice import process_voice_message
+
+logger = logging.getLogger(__name__)
 
 # 目前只接收 Excel 文件；document 类型消息的后缀不在这个集合里就直接告知用户不支持，
 # 不创建 run、不调用 agent。
@@ -81,6 +84,7 @@ async def webhook(request: Request) -> JSONResponse:
                 audio_bytes = base64.b64decode(media["data"])
                 thread_id = whatsapp_thread_id(phone)
                 run_id = await _runtime.runs_store.acreate_run(thread_id)
+                logger.info("收到语音消息，开始处理 phone=%s thread_id=%s run_id=%s", phone, thread_id, run_id)
                 task = asyncio.create_task(
                     process_voice_message(phone, thread_id, run_id, audio_bytes, mimetype)
                 )
@@ -99,6 +103,7 @@ async def webhook(request: Request) -> JSONResponse:
 
     thread_id = whatsapp_thread_id(phone)
     run_id = await _runtime.runs_store.acreate_run(thread_id)
+    logger.info("收到消息，开始处理 phone=%s thread_id=%s run_id=%s", phone, thread_id, run_id)
     task = asyncio.create_task(process_message(phone, thread_id, run_id, body))
     _track(task)
 

@@ -3,17 +3,21 @@
 模块用 `_runtime.xxx` 取最新值。
 """
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from src.agent_server.shared.logging_config import configure_logging
+
+configure_logging()
+
 import contextlib
 import os
-
-from dotenv import load_dotenv
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from langgraph.store.postgres.base import PoolConfig
 from psycopg_pool import AsyncConnectionPool
 from starlette.applications import Starlette
-
-load_dotenv()
 
 from src.agent.main import build_agent
 from src.agent_server.shared import runtime as _runtime

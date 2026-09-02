@@ -1,6 +1,37 @@
 # WhatsApp Excel Agent 项目总览
 
-本文档描述当前仓库内三个服务的职责、相互关系，以及建议的优化与补充项。适用于新成员 onboarding 或规划后续迭代时快速建立全局认知。
+本文档描述本 monorepo 的目录结构、生产环境服务职责与相互关系，供新成员 onboarding、日常运维或 AI 辅助开发时快速建立全局认知。
+
+**阅读指引**：
+
+- 跑通主链路：看「生产服务一览」→「启动顺序」→「端口速查」
+- 改 WhatsApp 消息处理：看「关键代码入口」中 `channels/whatsapp/`
+- 改 Agent 工具/技能：看 `excel_agent/src/agent/`
+- 本地一键启动：`make dev` 或 `make health`
+
+---
+
+## 仓库结构
+
+```
+whatsapp_agent/                 # monorepo 根目录
+├── PROJECT_OVERVIEW.md         # 本文档（架构总览）
+├── README.md                   # 快速入口
+├── Makefile                    # make infra / agent / health / dev
+├── excel_agent/                # ★ 核心生产服务：Excel/报表 Agent
+├── whatsapp_simulator/         # ★ WhatsApp 接入网关
+├── third_app/                  # ★ 报表技能 mock 数据源
+└── content_agent/              # 实验性内容 Agent（非生产，见下文）
+```
+
+| 目录 | 角色 | 是否生产必需 |
+|------|------|-------------|
+| `excel_agent` | 核心 Agent：模型推理、工具/技能、会话持久化、多渠道 HTTP | **是** |
+| `whatsapp_simulator` | WhatsApp 扫码登录、白名单、Webhook 桥接 | **是**（走 WhatsApp 渠道时） |
+| `third_app` | 成本/支付宝报表技能的 HTTP 假数据 | **是**（跑报表技能时） |
+| `content_agent` | 早期文字内容 Agent 原型（情商沟通 skill） | **否** |
+
+---
 
 ## 项目定位
 
@@ -8,7 +39,7 @@
 
 **使用范围**：内部工具，非对外商业产品。用户规模小、身份可控，通过 `MESSAGE_WHITELIST` 限制只有指定号码能触发 Agent。
 
-核心 AI 能力集中在 `excel_agent`；`whatsapp_simulator` 承担 **WhatsApp 接入层**（扫码登录、收发消息、Webhook 推送）；`third_app` 为报表技能提供模拟数据源。
+核心 AI 能力集中在 `excel_agent`；`whatsapp_simulator` 承担 **WhatsApp 接入层**；`third_app` 为报表技能提供模拟数据源。
 
 ---
 
@@ -19,31 +50,55 @@
 | 方案 | 状态 | 说明 |
 |------|------|------|
 | **whatsapp_simulator** | ✅ **采用** | 专用 WhatsApp 号扫码登录，白名单控制访问，支持 Excel 文件收发 |
-| Meta Cloud API（`whatsapp_meta`） | 不采用 | 代码中保留但不在当前方案内使用；适合对外大规模商业场景，内部工具无需此复杂度 |
-| 阿里云 Chat App 等 BSP | 不采用 | 同上，过度设计 |
+| Meta Cloud API（`whatsapp_meta`） | 不采用 | 代码中保留但不在当前方案内使用 |
+| 阿里云 Chat App 等 BSP | 不采用 | 内部工具无需此复杂度 |
 
-**选型理由（内部场景）**：
+**选型理由（内部场景）**：无 Meta 企业认证成本；白名单满足安全需求；支持 Excel 上传；用户规模小（数十人以内），非官方协议风险可接受。建议使用**专用工作号**，勿绑个人主号。
 
-- 无 Meta 企业认证、HTTPS 公网 webhook、专用 API 号码等申请成本
-- 白名单机制已满足「仅内部人员可用」的安全需求
-- 支持 Excel 文件上传（`whatsapp_meta` 渠道当前尚未实现）
-- 用户规模小（数十人以内），非官方协议的风险可接受；建议使用**专用工作号**，勿绑个人主号
-
-**运维注意**：simulator 依赖 WhatsApp Web 非官方协议，可能因 WhatsApp 更新导致掉线需重新扫码；会话持久化在 `.wwebjs_auth/`，需做好备份。
+**运维注意**：simulator 依赖 WhatsApp Web 非官方协议，可能因 WhatsApp 更新掉线需重新扫码；会话持久化在 `.wwebjs_auth/`，需做好备份。
 
 ---
 
-## 三个服务一览
+## 生产服务一览
 
 | 服务 | 技术栈 | 默认端口 | 是否必需 | 一句话说明 |
 |------|--------|----------|----------|------------|
-| **excel_agent** | Python (Starlette + LangGraph + deepagents) | `8200` | **必需** | 核心 Agent 服务：接收消息、跑模型、调工具/技能、持久化会话 |
-| **whatsapp_simulator** | Node.js (Express + whatsapp-web.js) | `3000` | **必需**（WhatsApp 渠道） | WhatsApp 网关：扫码登录、白名单过滤、Webhook 与 Agent 双向通信 |
-| **third_app** | Python (FastAPI) | `8800` | **必需**（报表技能） | 模拟第三方业务数据 API，为成本报表/支付宝报表技能提供数据源 |
+| **excel_agent** | Python (Starlette + LangGraph + deepagents) | `8200` | **必需** | 核心 Agent：接收消息、跑模型、调工具/技能、持久化会话 |
+| **whatsapp_simulator** | Node.js (Express + whatsapp-web.js) | `3000` | **必需**（WhatsApp 渠道） | WhatsApp 网关：扫码登录、白名单过滤、Webhook 双向通信 |
+| **third_app** | Python (FastAPI) | `8800` | **必需**（报表技能） | 模拟第三方业务数据 API |
 
-除上述三个服务外，`excel_agent` 还依赖 **Docker Compose 起的 Postgres**（会话/checkpoint 持久化）和 **Docker 沙箱容器**（LibreOffice 渲染报表截图），它们不算独立「业务服务」，但是运行时的硬依赖。
+**运行时基础设施**（不算独立业务服务，但 `excel_agent` 硬依赖）：
 
-**无 WhatsApp 的调试路径**：使用 `excel_agent` 的 `tob` 渠道（`POST /v1/tob/threads/{id}/runs` SSE 接口），无需启动 `whatsapp_simulator`，适合纯后端调试。
+| 组件 | 说明 |
+|------|------|
+| **Postgres** (`:5432`) | 会话 checkpoint、store、runs 表持久化 |
+| **Docker sandbox** | LibreOffice 渲染报表截图；skill 脚本在容器内执行 |
+
+**无 WhatsApp 的调试路径**：使用 `excel_agent` 的 `tob` 渠道（`POST /v1/tob/threads/{id}/runs` SSE 接口），无需启动 `whatsapp_simulator`。
+
+---
+
+## 配置说明（各服务独立 .env）
+
+`whatsapp_simulator` 与 `excel_agent` 是**两个独立服务**，后期也会分开部署。它们**不需要共用一份配置文件**，各自维护 `whatsapp_simulator/.env` 与 `excel_agent/.env` 即可。
+
+只需保证以下**对接参数**互相指向（其余变量各管各的）：
+
+| whatsapp_simulator | excel_agent |
+|--------------------|-------------|
+| `WEBHOOK_URL` → agent 的 `/webhook` 地址 | `WHATSAPP_SIMULATOR_URL` → simulator 的 base URL |
+
+示例（本地开发）：
+
+```bash
+# whatsapp_simulator/.env
+WEBHOOK_URL=http://localhost:8200/webhook
+
+# excel_agent/.env
+WHATSAPP_SIMULATOR_URL=http://localhost:3000
+```
+
+`MESSAGE_WHITELIST` 只在 simulator 侧配置；`DEEPSEEK_API_KEY`、`DATABASE_URL` 等只在 excel_agent 侧配置。不要把两个服务的变量合并到一个 `.env` 里强行共享。
 
 ---
 
@@ -84,6 +139,26 @@
 
 ---
 
+## 关键代码入口
+
+改代码时优先定位以下路径，避免全库扫描：
+
+| 关注点 | 路径 |
+|--------|------|
+| HTTP 应用入口 | `excel_agent/src/agent_server/__init__.py`（`app` + lifespan） |
+| 路由聚合 | `excel_agent/src/agent_server/channels/` |
+| WhatsApp Webhook 入站 | `excel_agent/src/agent_server/channels/whatsapp/routes.py` |
+| 消息处理与回发 | `excel_agent/src/agent_server/channels/whatsapp/processor.py`、`client.py` |
+| Agent 单轮执行 | `excel_agent/src/agent_server/shared/engine.py` → `run_agent_turn` |
+| Agent 本体与工具 | `excel_agent/src/agent/main.py`、`excel_agent/src/agent/tools/` |
+| 预置技能 | `excel_agent/src/agent/skills/`（`cost-report`、`alipay-report`、`excel-chart`） |
+| Docker 沙箱执行 | `excel_agent/src/agent/backends/docker_sandbox.py` |
+| tob 调试 SSE | `excel_agent/src/agent_server/channels/tob/routes.py` |
+| simulator 服务端 | `whatsapp_simulator/src/server.js` |
+| third_app API | `third_app/main.py` → `third_app/src/third_app/server.py` |
+
+---
+
 ## 各服务详细说明
 
 ### 1. excel_agent（核心 Agent 服务）
@@ -93,15 +168,15 @@
 **职责**：
 
 - **agent-server**（`src/agent_server`）：对外 HTTP 服务，聚合多渠道路由
-- **agent 本体**（`src/agent`）：基于 deepagents + DeepSeek 模型，提供 Excel 读写、图表生成、联网搜索、文件保存等工具
-- **Skills**（`src/agent/skills/`）：预置业务能力
-  - `cost-report`：从 third_app 拉取成本数据，在 Docker 沙箱内用 LibreOffice 渲染报表截图
+- **agent 本体**（`src/agent`）：基于 deepagents + DeepSeek，提供 Excel 读写、图表生成、联网搜索、文件保存等工具
+- **Skills**（`src/agent/skills/`）：
+  - `cost-report`：从 third_app 拉取成本数据，沙箱内 LibreOffice 渲染报表截图
   - `alipay-report`：从 third_app 拉取支付宝匹配流水，生成报表图片
   - `excel-chart`：通用 Excel 图表生成说明
 - **渠道适配**（`src/agent_server/channels/`）：
-  - `whatsapp/`：**主渠道**，对接 `whatsapp_simulator` 的 Webhook + 出站 HTTP
-  - `tob/`：内部调试 SSE API + admin 查看页（无需 WhatsApp 时可用）
-  - `whatsapp_meta/`：Meta Cloud API 实现，**当前方案不使用**，代码保留供未来参考
+  - `whatsapp/`：**主渠道**，对接 simulator 的 Webhook + 出站 HTTP
+  - `tob/`：内部调试 SSE API + admin 查看页
+  - `whatsapp_meta/`：Meta Cloud API 实现，**当前不使用**，代码保留供参考
 
 **关键环境变量**：`DEEPSEEK_API_KEY`、`TAVILY_API_KEY`、`DATABASE_URL`、`THIRD_APP_BASE_URL`、`WHATSAPP_SIMULATOR_URL`
 
@@ -125,14 +200,14 @@ make dev               # 监听 0.0.0.0:8200
 
 - 用 `whatsapp-web.js` 封装 WhatsApp Web 会话（首次需扫码，会话持久化在 `.wwebjs_auth/`）
 - 提供 REST API：发文字/媒体、查会话、查状态、登出/重启
-- 通过 `WEBHOOK_URL` 将 `message` 等事件 POST 到 `excel_agent` 的 `/webhook`
-- **`MESSAGE_WHITELIST`**：只有白名单内的号码发来的消息才会推送给 Agent，其余消息忽略
+- 通过 `WEBHOOK_URL` 将 `message` 等事件 POST 到 Agent 的 `/webhook`
+- **`MESSAGE_WHITELIST`**：只有白名单号码的消息才会推送给 Agent
 
 **与 excel_agent 的对接**：
 
 | 方向 | 机制 |
 |------|------|
-| 入站（用户 → Agent） | simulator 收到白名单消息后 Webhook → `excel_agent POST /webhook` |
+| 入站（用户 → Agent） | simulator Webhook → `excel_agent POST /webhook` |
 | 出站（Agent → 用户） | `excel_agent` 调 `WHATSAPP_SIMULATOR_URL/messages` 或 `/messages/media` |
 
 **推荐配置**（`whatsapp_simulator/.env`）：
@@ -141,7 +216,6 @@ make dev               # 监听 0.0.0.0:8200
 PORT=3000
 WEBHOOK_URL=http://localhost:8200/webhook
 WEBHOOK_EXCLUDE_EVENTS=qr
-# 内部同事号码，逗号分隔（支持带/不带国家码、@c.us 后缀）
 MESSAGE_WHITELIST=85212345678,8613800138000
 ```
 
@@ -151,17 +225,11 @@ MESSAGE_WHITELIST=85212345678,8613800138000
 cd whatsapp_simulator
 npm install
 cp .env.example .env
-# 编辑 WEBHOOK_URL 和 MESSAGE_WHITELIST
 npm start
-# 首次启动扫码登录；也可 GET http://localhost:3000/qr 获取二维码
+# 首次扫码；或 GET http://localhost:3000/qr
 ```
 
-**运维提示**：
-
-- 使用**专用工作号**，不要使用个人主号
-- 定期备份 `.wwebjs_auth/` 目录，避免重装后需重新扫码
-- 通过 `GET /status` 检查连接状态；掉线时执行 `POST /session/restart` 或重新扫码
-- 群聊消息默认不触发 Agent（`excel_agent` 侧对 `@g.us` 直接忽略）
+**运维提示**：专用工作号；备份 `.wwebjs_auth/`；`GET /status` 查连接；群聊 `@g.us` 在 excel_agent 侧直接忽略。
 
 ---
 
@@ -169,68 +237,80 @@ npm start
 
 **目录**：`third_app/`
 
-**职责**：
-
-提供报表技能所需的**假数据 API**，模拟真实业务系统的 HTTP 接口：
+**职责**：提供报表技能所需的假数据 API：
 
 | 接口 | 用途 | 说明 |
 |------|------|------|
-| `GET /api/electronics/orders` | 成本报表 — 供应商采购数据 | 一次性返回约 150 条 |
-| `GET /api/food-agri/orders` | 成本报表 — 月度成本明细 | 分页，page_size 上限 99 |
-| `GET /api/alipay/matching-records` | 支付宝报表 — 匹配流水 | 按日缓存，分页，page_size 上限 500 |
+| `GET /api/electronics/orders` | 成本报表 — 供应商采购 | 约 150 条 |
+| `GET /api/food-agri/orders` | 成本报表 — 月度成本明细 | 分页，page_size ≤ 99 |
+| `GET /api/alipay/matching-records` | 支付宝报表 — 匹配流水 | 按日缓存，page_size ≤ 500 |
 
-**与 excel_agent 的对接**：
+**访问方式**：
 
-- Agent 宿主机上的脚本通过 `THIRD_APP_BASE_URL`（默认 `http://127.0.0.1:8800`）访问
-- Docker 沙箱容器内通过 `http://host.docker.internal:8800` 访问（在 `docker-compose.yml` 中硬编码）
+- 宿主机脚本：`THIRD_APP_BASE_URL`（默认 `http://127.0.0.1:8800`）
+- Docker 沙箱内：`http://host.docker.internal:8800`（`docker-compose.yml` 硬编码）
 
 **启动**：
 
 ```bash
 cd third_app
-uv run python main.py   # 监听 0.0.0.0:8800
+uv run python main.py   # 0.0.0.0:8800
 ```
 
-> 不启动 third_app 不会导致 agent-server 启动失败，但触发 `cost-report` / `alipay-report` 技能时会报「拉取数据失败」。
+> 不启动 third_app 不会导致 agent-server 启动失败，但 `cost-report` / `alipay-report` 会报「拉取数据失败」。
+
+---
+
+### 4. content_agent（实验性，非生产）
+
+**目录**：`content_agent/`
+
+**状态**：**不参与主链路**，无其他服务依赖它，可忽略除非在做内容类 Agent 实验。
+
+这是 `excel_agent` 之前的**轻量原型**：同样基于 deepagents + DeepSeek，但架构更简单——单文件 Starlette webhook、SQLite 持久化、无 Docker 沙箱、无 Excel/报表能力。内置 `eq-communication` skill（情商与人际沟通类文字内容生成）。
+
+| 对比项 | excel_agent（生产） | content_agent（实验） |
+|--------|---------------------|----------------------|
+| 端口 | `8200` | `8100` |
+| 持久化 | Postgres | SQLite |
+| 主要能力 | Excel 分析、报表技能 | 文字内容生成 |
+| WhatsApp 对接 | 完整多渠道架构 | 独立 `src/webhook.py` |
+
+若要将 simulator 临时指向它，需把 `WEBHOOK_URL` 改为 `http://localhost:8100/webhook`，且**不要与 excel_agent 同时占用同一机器人会话**。`README.md` 尚未编写，启动方式：`cd content_agent && make dev`。
 
 ---
 
 ## 典型消息处理链路
 
-1. 白名单内的同事在 WhatsApp 向机器人号发送文字或 Excel 文件
+1. 白名单用户在 WhatsApp 向机器人号发送文字或 Excel 文件
 2. `whatsapp_simulator` 校验白名单后，POST `{ event: "message", data: {...} }` 到 `excel_agent /webhook`
-3. `channels/whatsapp/routes.py` 解析 payload：校验文件格式（仅 `.xlsx`/`.xls`）、落盘上传文件、创建 `run_id`
-4. 后台任务 `processor.process_message` 调用 `shared/engine.run_agent_turn`
-5. Agent 根据需要调用工具（读 Excel、聚合、画图）或 `execute` 跑 skill 脚本
-6. 报表类 skill 在 Docker 沙箱内执行，HTTP 拉取 `third_app` 数据，LibreOffice 渲染后截图到 `output/`
-7. `processor` 通过 `whatsapp/client.py` 调 simulator 的 `/messages` 或 `/messages/media` 把结果推回用户
+3. `channels/whatsapp/routes.py` 解析 payload：校验文件格式（仅 `.xlsx`/`.xls`）、落盘、创建 `run_id`
+4. 后台 `processor.process_message` 调用 `shared/engine.run_agent_turn`
+5. Agent 调用工具（读 Excel、聚合、画图）或 `execute` 跑 skill 脚本
+6. 报表 skill 在沙箱内 HTTP 拉取 `third_app`，LibreOffice 渲染截图到 `output/`
+7. `processor` 经 `whatsapp/client.py` 调 simulator 回发消息/文件
 
 ---
 
 ## 服务间依赖与启动顺序
 
-建议按以下顺序启动：
+可用仓库根目录 `make dev` 一键并行启动，或按下面顺序手动启动：
 
 ```
-1. third_app          → 报表技能的数据源（可晚于 agent-server 启动，但跑报表前必须就绪）
-2. docker compose     → postgres + sandbox（agent-server 启动时会等待 sandbox 最多 30s）
+1. third_app          → 报表数据源（跑报表前必须就绪）
+2. docker compose     → postgres + sandbox（agent-server 启动等待 sandbox 最多 30s）
 3. excel_agent        → make dev (:8200)
-4. whatsapp_simulator → 配置 WEBHOOK_URL + MESSAGE_WHITELIST 后启动，扫码登录
+4. whatsapp_simulator → WEBHOOK_URL + MESSAGE_WHITELIST，扫码登录
 ```
 
-**验证各服务是否正常**：
+**验证**：
 
 ```bash
-# third_app
-curl http://127.0.0.1:8800/docs
-
-# excel_agent（无需 WhatsApp）
+curl http://127.0.0.1:8800/docs                                    # third_app
 curl -N -X POST http://127.0.0.1:8200/v1/tob/threads/smoke-test/runs \
-  -H "Content-Type: application/json" \
-  -d '{"message": "你好"}'
-
-# whatsapp_simulator
-curl http://127.0.0.1:3000/status
+  -H "Content-Type: application/json" -d '{"message": "你好"}'        # excel_agent
+curl http://127.0.0.1:3000/status                                    # simulator
+make health                                                          # 或根目录一键检查
 ```
 
 ---
@@ -239,13 +319,14 @@ curl http://127.0.0.1:3000/status
 
 | 组件 | 端口 | 关键配置 |
 |------|------|----------|
-| excel_agent (agent-server) | `8200` | `DATABASE_URL`, `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `WHATSAPP_SIMULATOR_URL` |
+| excel_agent | `8200` | `DATABASE_URL`, `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `WHATSAPP_SIMULATOR_URL` |
 | whatsapp_simulator | `3000` | `WEBHOOK_URL`, `MESSAGE_WHITELIST` |
 | third_app | `8800` | 无（开发 mock，无鉴权） |
+| content_agent | `8100` | `DEEPSEEK_API_KEY`（实验，非生产） |
 | Postgres | `5432` | `POSTGRES_PASSWORD` |
 | Docker sandbox | — | 容器名 `excel_agent-sandbox-1`，无对外端口 |
 
-**两处 `.env` 需对齐**：
+**simulator 与 excel_agent 的 `.env` 需对齐**：
 
 | whatsapp_simulator | excel_agent |
 |--------------------|-------------|
@@ -254,47 +335,15 @@ curl http://127.0.0.1:3000/status
 
 ---
 
-## 优化与补充建议
+## 已知设计约束
 
-以下按优先级归类，供后续迭代参考。
-
-### 高优先级（影响可运维性与开发体验）
-
-| 项 | 现状 | 建议 |
-|----|------|------|
-| **统一日志与健康检查** | `excel_agent` 内大量 `logger.info` 因未配置 `basicConfig` 在生产不输出；无 `/health` 端点 | 按 `excel_agent/docs/observability-plan.md` 落地：统一 logging、run_id/thread_id 上下文注入、`GET /health`、最近失败 run 查询接口 |
-| **simulator 可用性监控** | 掉线/扫码失效无主动告警，用户发消息无响应才发现 | 定时探测 `GET /status`；状态非 `READY` 时通知运维；文档化重新扫码流程 |
-| **根目录编排脚本** | 三个服务 + Docker 需分别启动，无 monorepo 级一键启动 | 增加根目录 `Makefile` 或 `scripts/dev.sh`：并行拉起 third_app、docker compose、agent-server、simulator，并打印各服务健康检查结果 |
-| **文档与代码不一致** | `excel_agent/README.md` 仍将 third_app/simulator 描述为「仓库外兄弟项目」；`third_app/README.md` 写的是 `8000` 端口，实际为 `8800` | 更新各 README，统一端口与接入方案说明 |
-| **根目录 README** | 仓库根目录无 README | 增加简短 `README.md`，链到本文档及各子项目 README |
-
-### 中优先级（功能完善）
-
-| 项 | 现状 | 建议 |
-|----|------|------|
-| **环境变量集中管理** | `whatsapp_simulator` 与 `excel_agent` 两处 `.env` 需手动对齐 | 根目录 `.env.example` 或 dev 脚本中集中声明 `WEBHOOK_URL` / `WHATSAPP_SIMULATOR_URL` |
-| **白名单管理** | 改白名单需改 `.env` 并重启 simulator | 短期可接受；人数增多时可考虑配置文件热加载或简单管理页 |
-| **third_app 启动校验** | agent-server 启动不检查 third_app 可达性，报表失败才暴露 | 可在 `/health` 中增加对 `THIRD_APP_BASE_URL` 的可选探测 |
-| **集成测试** | 有 sandbox smoke_test、pytest 性能测试，但缺少跨服务 E2E | 增加可选 E2E：tob 渠道触发 cost-report + 校验 output 产物 |
-
-### 低优先级 / 长期
-
-| 项 | 现状 | 建议 |
-|----|------|------|
-| **Web 内部入口** | 仅 WhatsApp + tob 调试接口 | 若团队更习惯网页传 Excel，可做简易内部 Web 页（复用 tob SSE 或落地 `channels/toc/`） |
-| **third_app 鉴权** | 开发 mock 无认证 | 若对接真实第三方，在 skill 脚本侧增加 API Key，并在 `.env` 统一管理 |
-| **统一 docker-compose** | 仅 postgres + sandbox 在 compose 中 | 可选增加 `docker-compose.dev.yml` 将 third_app 容器化 |
-| **CI/CD** | 未见仓库级 GitHub Actions | 增加：lint、pytest、`smoke_test.py`、可选 PR 门禁 |
-
-### 已知设计约束（非缺陷，但需知晓）
-
-- **仅白名单用户可触发**：非白名单号码发消息会被 simulator 静默忽略
-- **群聊默认不回复**：`whatsapp/routes.py` 对 `@g.us` 结尾的 JID 直接 ack，不触发 Agent
-- **文件类型限制**：WhatsApp 渠道仅接受 `.xlsx`/`.xls`，其它格式会短路回复提示
-- **单文件大小限制**：simulator 默认 `MAX_MEDIA_SIZE_MB=20`，超过则返回 `mediaError: too_large`
-- **sandbox 启动超时**：agent-server 等待 sandbox 容器就绪默认 30 秒，超时则进程退出
-- **报表技能与通用 Excel 工具分离**：cost/alipay 报表走固定 skill 脚本 + third_app，不走 `inspect_excel` 探索流程
-- **非官方 WhatsApp 协议**：simulator 基于 whatsapp-web.js，存在因 WhatsApp 更新或风控导致掉线/封号的可能；内部小范围使用可接受，不建议对外大规模商用
+- **仅白名单用户可触发**：非白名单消息被 simulator 静默忽略
+- **群聊默认不回复**：`@g.us` 结尾的 JID 直接 ack，不触发 Agent
+- **文件类型限制**：WhatsApp 渠道仅接受 `.xlsx`/`.xls`
+- **单文件大小限制**：simulator 默认 `MAX_MEDIA_SIZE_MB=20`
+- **sandbox 启动超时**：默认 30 秒，超时 agent-server 退出
+- **报表技能与通用 Excel 工具分离**：cost/alipay 走固定 skill + third_app，不走 `inspect_excel` 探索流程
+- **非官方 WhatsApp 协议**：内部小范围使用可接受，不建议对外大规模商用
 
 ---
 
@@ -302,18 +351,20 @@ curl http://127.0.0.1:3000/status
 
 | 文档 | 路径 | 内容 |
 |------|------|------|
-| excel_agent 启动与排障 | `excel_agent/README.md` | 环境变量、启动步骤、常见问题 |
-| 可观测性方案（待落地） | `excel_agent/docs/observability-plan.md` | 日志、健康检查、run 查询 |
-| 多渠道设计（toC 待落地） | `excel_agent/docs/multi-channel-design.md` | toC Web 前端接入方案（备选，非当前主路径） |
-| whatsapp_simulator API | `whatsapp_simulator/README.md` | REST 接口、Webhook 事件、白名单配置 |
-| third_app API | `third_app/README.md` | 数据接口说明（注意端口以 `main.py` 的 8800 为准） |
+| 快速入口 | `README.md` | 启动命令、跨服务配置对齐 |
+| excel_agent 启动与排障 | `excel_agent/README.md` | 环境变量、启动步骤、日志与健康检查 |
+| 可观测性设计参考 | `excel_agent/docs/observability-plan.md` | 日志/健康检查方案（已落地） |
+| 多渠道设计（备选） | `excel_agent/docs/multi-channel-design.md` | toC Web 前端接入方案 |
+| whatsapp_simulator API | `whatsapp_simulator/README.md` | REST 接口、Webhook、白名单 |
+| third_app API | `third_app/README.md` | 数据接口（端口以 `main.py` 的 8800 为准） |
 
 ---
 
 ## 总结
 
-- **excel_agent** 是系统的核心：模型推理、工具调用、会话持久化、消息处理均在此。
-- **whatsapp_simulator** 是 WhatsApp 接入层：专用号扫码登录、白名单过滤、Webhook 双向桥接内部用户与 Agent。
-- **third_app** 是报表类技能的模拟数据源，仅被 Docker 沙箱内的 skill 脚本 HTTP 调用。
+- **excel_agent** 是系统核心：模型推理、工具调用、会话持久化、消息处理均在此。
+- **whatsapp_simulator** 是 WhatsApp 接入层：扫码登录、白名单、Webhook 桥接。
+- **third_app** 是报表技能的模拟数据源，仅被沙箱内 skill 脚本 HTTP 调用。
+- **content_agent** 是早期实验原型，**不在生产链路中**，可忽略。
 
-三者关系：**内部白名单用户 ↔ simulator ↔ agent-server ↔（工具/sandbox）↔ third_app**。Postgres 与 Docker 沙箱为 agent 的运行时基础设施。当前最值得优先补齐的是 **可观测性（日志/健康检查）**、**simulator 可用性监控** 以及 **根目录开发编排**。
+主链路：**内部白名单用户 ↔ simulator ↔ excel_agent ↔（工具/sandbox）↔ third_app**。Postgres 与 Docker 沙箱为运行时基础设施。
