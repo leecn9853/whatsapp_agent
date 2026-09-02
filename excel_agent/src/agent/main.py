@@ -133,7 +133,7 @@ async def seed_default_memory(
     return None
 
 
-_OFF_TOPIC_REPLY = "这个我帮不上忙哦～ 这类问题建议问问其他 AI 助手。"
+_OFF_TOPIC_REPLY = "问题可能超出我的知识范围，或者您可以把问题描述得更加具体一些。"
 
 # 技能目录跟 docker-compose.yml 里挂进沙箱的 /workspace/skills 是同一份宿主机目录
 # （见 `./src/agent/skills:/workspace/skills:ro`），这里直接读本地文件，不通过
