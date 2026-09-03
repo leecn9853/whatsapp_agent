@@ -25,6 +25,15 @@ echo "==> 启动 excel_agent (:8200)"
 PIDS+=($!)
 
 echo "==> 启动 whatsapp_simulator (:3000)"
+# 避免上次异常退出后旧 Node 占着端口，导致新代码不生效（/login 404 等）
+if command -v lsof >/dev/null 2>&1; then
+  stale=$(lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null || true)
+  if [[ -n "${stale}" ]]; then
+    echo "    检测到 3000 被占用 (PID ${stale})，先结束旧进程"
+    kill ${stale} 2>/dev/null || true
+    sleep 1
+  fi
+fi
 (cd "$ROOT/whatsapp_simulator" && npm start) &
 PIDS+=($!)
 

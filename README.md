@@ -20,7 +20,7 @@
 
 | 工具 | 用途 |
 |------|------|
-| [uv](https://docs.astral.sh/uv/) | `excel_agent`、`third_app` |
+| [uv](https://docs.astral.sh/uv/) | `excel_agent`、`third_app`（含语音转写用的 ffmpeg 二进制） |
 | **Docker Desktop** | Postgres + LibreOffice 沙箱 |
 | Node.js | `whatsapp_simulator` |
 
@@ -60,7 +60,8 @@ cp whatsapp_simulator/.env.example whatsapp_simulator/.env
 cd ~/Desktop/work_blue/whatsapp_agent   # 换成你的路径
 make dev
 
-# 3. 首次或会话失效时：终端二维码，或浏览器打开 http://localhost:3000/qr 扫码
+# 3. 首次或会话失效时：浏览器打开 http://localhost:3000/login 扫码
+#    （也可打开 /qr 看 PNG，或看终端二维码）
 
 # 4. 检查
 make health
@@ -112,6 +113,9 @@ curl -N -X POST http://127.0.0.1:8200/v1/tob/threads/smoke-test/runs \
 | `docker: command not found` | 打开 Docker Desktop，或配置 PATH（见上文） |
 | simulator 一直重试 initialize | 先 `npm run install-browser`；仍失败则看 [whatsapp_simulator/README.md](whatsapp_simulator/README.md) 运维章节 |
 | 报表报「拉取数据失败」 | 确认 `third_app` 在跑：`curl http://127.0.0.1:8800/docs` |
+| 发回复 `503` / `client not ready` | WhatsApp 未登录或掉线：打开 http://localhost:3000/login 扫码；`curl http://localhost:3000/status` 应为 `READY` |
+| `/login` 仍是 `not found` / 改了代码不生效 | 旧 Node 占着 3000：`kill -9 $(lsof -tiTCP:3000 -sTCP:LISTEN)` 后重新 `make dev` |
+| 语音报错找不到 `ffmpeg` | 在 `excel_agent` 执行 `uv sync`（依赖含 `imageio-ffmpeg`）后重启 agent |
 
 ## 文档索引
 

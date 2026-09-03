@@ -3,7 +3,7 @@ const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const config = require('./config');
 const webhook = require('./webhook');
-const { hasExistingSession, isWhitelisted, resolveLidToPhone } = require('./utils');
+const { hasExistingSession, clearSessionDir, isWhitelisted, resolveLidToPhone } = require('./utils');
 
 const STATE = {
   INITIALIZING: 'INITIALIZING',
@@ -183,22 +183,37 @@ function getQr() {
 }
 
 async function logout() {
-  if (!client) return;
-  await client.logout();
+  // 登出并清本地缓存，再重新 init，页面才能出新二维码换号
+  if (client) {
+    try {
+      await client.logout();
+    } catch (err) {
+      console.warn('[whatsappClient] logout 失败，改为 destroy:', err.message);
+    }
+    await client.destroy().catch(() => {});
+    client = null;
+  }
+  clearSessionDir();
   lastInfo = null;
+  lastQrDataUrl = null;
   state = STATE.DISCONNECTED;
+  init();
 }
 
 async function restart() {
+  // 保留 .wwebjs_auth，尝试用同一账号重连（不换号）
   if (client) {
     await client.destroy().catch(() => {});
+    client = null;
   }
+  lastQrDataUrl = null;
   init();
 }
 
 async function shutdown() {
   if (client) {
     await client.destroy().catch(() => {});
+    client = null;
   }
 }
 

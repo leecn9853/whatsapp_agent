@@ -6,6 +6,14 @@ function hasExistingSession() {
   return fs.existsSync(path.join(path.resolve(config.sessionPath), 'session'));
 }
 
+/** 删除 LocalAuth 持久化目录，换号/强制重登时用 */
+function clearSessionDir() {
+  const sessionPath = path.resolve(config.sessionPath);
+  if (!fs.existsSync(sessionPath)) return;
+  fs.rmSync(sessionPath, { recursive: true, force: true });
+  console.log(`[utils] 已清除会话目录: ${sessionPath}`);
+}
+
 function normalizeNumber(id) {
   return (id || '').replace(/\D/g, '');
 }
@@ -36,6 +44,7 @@ function normalizeChatId(to) {
 
 module.exports = {
   hasExistingSession,
+  clearSessionDir,
   normalizeNumber,
   isWhitelisted,
   resolveLidToPhone,

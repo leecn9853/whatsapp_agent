@@ -42,13 +42,14 @@ npm run install-browser
 |---|---|---|
 | `GET /health` | – | 存活检查 |
 | `GET /status` | – | `{ state, info }` |
-| `GET /qr` | – | 二维码 PNG（无待扫码时 404） |
+| `GET /qr` | – | **PNG 图片**（浏览器可直接打开）；`?format=json` 返回 data URL；无待扫码时 404 |
+| `GET /login` | – | 扫码页（自动刷新），推荐用这个扫码 |
 | `POST /messages` | `{ to, message }` | 发文本消息，`to` 可为裸手机号或完整 chatId |
 | `POST /messages/media` | `{ to, mediaUrl?, mediaBase64?, mimetype?, filename?, caption? }` | 发媒体消息 |
 | `GET /chats` | – | 会话列表 |
 | `GET /chats/:chatId/messages?limit=50` | – | 某会话的最近消息 |
-| `POST /session/logout` | – | 登出 |
-| `POST /session/restart` | – | 重新初始化客户端 |
+| `POST /session/logout` | – | **退出并换号**：登出 + 清除 `.wwebjs_auth` + 重新出码 |
+| `POST /session/restart` | – | **同账号重连**：保留本地会话，只重启客户端 |
 
 未进入 `READY` 状态时，`/messages` 与 `/messages/media` 返回 `503`。
 
@@ -85,19 +86,25 @@ simulator 基于 WhatsApp Web 非官方协议，可能因 WhatsApp 更新或会�
    `state` 应为 `READY`；否则需要重新扫码或重启会话。
 
 2. 获取二维码重新登录：
-   ```bash
-   curl http://localhost:3000/qr -o qr.png && open qr.png   # macOS
-   ```
-   或重启服务后看终端输出的二维码。
+   - 浏览器打开 http://localhost:3000/login（推荐，自动刷新）
+   - 或打开 http://localhost:3000/qr（直接显示 PNG）
+   - 或：
+     ```bash
+     curl -sf http://localhost:3000/qr -o qr.png && open qr.png   # macOS
+     ```
+   也可看 `make simulator` / `make dev` 终端里打印的二维码。
 
-3. 重启会话（不删 `.wwebjs_auth/`）：
+3. 同账号重连（不删 `.wwebjs_auth/`）：
    ```bash
    curl -X POST http://localhost:3000/session/restart
    ```
 
-4. 完全登出后重新扫码：
-   ```bash
-   curl -X POST http://localhost:3000/session/logout
-   ```
+4. 退出当前账号并换号扫码（清缓存）：
+   - 浏览器打开 http://localhost:3000/login → 点「退出并换号扫码」
+   - 或：
+     ```bash
+     curl -X POST http://localhost:3000/session/logout
+     ```
+   完成后 `/status` 会变为 `QR_PENDING`，再扫新号即可。
 
 生产环境可用 cron 定时 `curl /status`，`state` 非 `READY` 时通知运维（本仓库未内置告警，由部署侧自行配置）。

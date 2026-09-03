@@ -29,7 +29,8 @@
 
 - **运行环境**：[uv](https://docs.astral.sh/uv/)（管理 Python 版本和依赖，Python 版本见
   `.python-version`，不需要单独装）、**Docker Desktop**（提供 Docker Engine，跑
-  `postgres`/`sandbox` 两个容器）。
+  `postgres`/`sandbox` 两个容器）。语音消息转写依赖 ffmpeg：`uv sync` 会装上
+  `imageio-ffmpeg`（自带二进制）；也可本机自行安装系统 ffmpeg。
 - **仓库内的兄弟服务**（均在 monorepo 根目录下）：
   - `third_app`——**必需**（跑报表时），报表功能的数据来源。
   - `whatsapp_simulator`——可选，只有要在本地走 `whatsapp` 渠道调试时才需要。
@@ -106,3 +107,6 @@
   agent-server。
 - **生成报表时报"拉取数据失败"**：`third_app` 没启动，或者没跑在 8800 端口。回到"启动步骤"
   第 4 步检查。
+- **语音转写报找不到 ffmpeg**：在本目录执行 `uv sync`（会安装 `imageio-ffmpeg`），然后重启 agent。
+- **发回复时 simulator 返回 503**：WhatsApp 未 `READY`。打开 http://localhost:3000/login 扫码，
+  或 `curl http://localhost:3000/status` 确认。

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -45,16 +46,48 @@ def _get_model():
     return _model
 
 
+def _ffmpeg_exe() -> str:
+    """优先用 PATH 里的 ffmpeg；没有则用 imageio-ffmpeg 自带的二进制（随 uv sync 安装）。"""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
+        raise VoiceTranscribeError(
+            "未找到 ffmpeg：请重新 uv sync（含 imageio-ffmpeg），或 brew install ffmpeg"
+        ) from e
+
+
 def _decode_to_wav16k_mono(audio_bytes: bytes) -> bytes:
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", "pipe:0", "-f", "wav", "-ar", "16000", "-ac", "1", "-loglevel", "error", "pipe:1"],
+            [
+                _ffmpeg_exe(),
+                "-i",
+                "pipe:0",
+                "-f",
+                "wav",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-loglevel",
+                "error",
+                "pipe:1",
+            ],
             input=audio_bytes,
             capture_output=True,
             check=True,
         )
+    except VoiceTranscribeError:
+        raise
     except FileNotFoundError as e:
-        raise VoiceTranscribeError("系统未安装 ffmpeg，无法转码语音") from e
+        raise VoiceTranscribeError(
+            "未找到 ffmpeg：请重新 uv sync（含 imageio-ffmpeg），或 brew install ffmpeg"
+        ) from e
     except subprocess.CalledProcessError as e:
         raise VoiceTranscribeError(f"ffmpeg 转码失败：{e.stderr.decode(errors='ignore')}") from e
     return result.stdout
