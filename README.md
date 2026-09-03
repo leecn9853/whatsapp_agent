@@ -61,7 +61,7 @@ cd ~/Desktop/work_blue/whatsapp_agent   # 换成你的路径
 make dev
 
 # 3. 首次或会话失效时：浏览器打开 http://localhost:3000/login 扫码
-#    （也可打开 /qr 看 PNG，或看终端二维码）
+#    （也可打开 /qr 看 PNG；已登录时可在该页退出换号）
 
 # 4. 检查
 make health

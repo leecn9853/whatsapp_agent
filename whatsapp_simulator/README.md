@@ -21,7 +21,7 @@ npm run install-browser
 
 然后重新 `npm start`。若已安装本机 Chrome，也可在 `.env` 里设置 `PUPPETEER_EXECUTABLE_PATH`（见下方环境变量表）。
 
-首次启动会打印二维码（也可 `GET /qr` 获取），扫码登录后会话持久化在 `.wwebjs_auth/`，重启无需再扫。
+首次或需登录时打开 http://localhost:3000/login 扫码（会话持久化在 `.wwebjs_auth/`，重启通常无需再扫）。
 
 > Puppeteer 默认下载内置 Chromium（约 300MB）。想复用本机 Chrome，可在 `.env` 设置 `PUPPETEER_EXECUTABLE_PATH`。
 
@@ -86,13 +86,13 @@ simulator 基于 WhatsApp Web 非官方协议，可能因 WhatsApp 更新或会�
    `state` 应为 `READY`；否则需要重新扫码或重启会话。
 
 2. 获取二维码重新登录：
-   - 浏览器打开 http://localhost:3000/login（推荐，自动刷新）
+   - 浏览器打开 http://localhost:3000/login（推荐，自动刷新；已登录可退出换号）
    - 或打开 http://localhost:3000/qr（直接显示 PNG）
    - 或：
      ```bash
      curl -sf http://localhost:3000/qr -o qr.png && open qr.png   # macOS
      ```
-   也可看 `make simulator` / `make dev` 终端里打印的二维码。
+   终端只会打印一行提示指向 `/login`，不再输出 ASCII 二维码。
 
 3. 同账号重连（不删 `.wwebjs_auth/`）：
    ```bash
