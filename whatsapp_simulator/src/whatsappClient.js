@@ -1,5 +1,4 @@
 const qrcode = require('qrcode');
-const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const config = require('./config');
 const webhook = require('./webhook');
@@ -41,7 +40,7 @@ function registerEvents(c) {
       hadExistingSession = false;
     }
     lastQrDataUrl = await qrcode.toDataURL(qr);
-    qrcodeTerminal.generate(qr, { small: true });
+    console.log('[whatsappClient] 待扫码，请打开 http://localhost:' + config.port + '/login');
     webhook.dispatch('qr', { qr });
   });
 
