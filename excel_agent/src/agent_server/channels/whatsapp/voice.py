@@ -1,8 +1,12 @@
 """语音消息的编排层：转写 → 立即回一句意图确认 → 接入现有 Excel 任务处理流程。
 
 跟 `channels/whatsapp/processor.py::process_message` 平级，职责边界分开：这里只管
-"语音怎么变成文字、怎么先回一句话"，拿到文字之后直接交给 `process_message`，进度提示/
-最终结果/发文件全部复用现有逻辑，不重新实现。
+"语音怎么变成文字、怎么先回一句话"，拿到文字之后直接交给 `_process_message_locked`，
+进度提示/最终结果/发文件全部复用现有逻辑，不重新实现。
+
+注意：这里不能直接调 `process_message`（那样会二次抢 `lock_for(thread_id)`，而
+asyncio.Lock 不可重入）。转写本身耗时不定，必须在转写之前就抢到锁、全程持锁到处理
+结束，否则同一用户紧接着发的下一条消息可能提前抢锁、先处理完，导致回复顺序错乱。
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from src.agent.main import llm
 from src.agent_server.shared import runtime as _runtime
 from src.agent_server.shared.voice_transcribe import VoiceTranscribeError, transcribe_voice
 from src.agent_server.channels.whatsapp.client import send_text
-from src.agent_server.channels.whatsapp.processor import process_message
+from src.agent_server.channels.whatsapp.processor import _process_message_locked
 
 logger = logging.getLogger(__name__)
 
@@ -45,25 +49,34 @@ async def _quick_intent_ack(text: str) -> str | None:
 async def process_voice_message(
     phone: str, thread_id: str, run_id: str, audio_bytes: bytes, mimetype: str
 ) -> None:
-    async with httpx.AsyncClient(timeout=60) as client:
-        try:
-            text = await transcribe_voice(audio_bytes, mimetype)
-        except VoiceTranscribeError as e:
-            logger.exception("语音转写失败（thread_id=%s）", thread_id)
-            await _runtime.runs_store.amark_error(run_id, f"语音转写失败: {e}")
-            with contextlib.suppress(Exception):
-                await send_text(client, phone, VOICE_TRANSCRIBE_FAILED_MESSAGE)
-            return
+    """转写 + 处理全程持有 lock_for(thread_id)，且在转写之前就去抢锁。
 
-        if not text.strip():
-            await _runtime.runs_store.amark_error(run_id, "语音转写结果为空")
-            with contextlib.suppress(Exception):
-                await send_text(client, phone, VOICE_EMPTY_MESSAGE)
-            return
+    转写耗时不定（几百毫秒到几秒），如果像 process_message 那样在转写之后才抢锁，
+    会导致同一个用户紧接着发的下一条消息（文字或语音）提前抢到锁、先处理完，
+    使回复顺序和用户发送顺序不一致（"串"了）。所以这里在最外层就持锁，转写和
+    _quick_intent_ack 都在锁内完成，最后调 _process_message_locked（它假定锁已持有，
+    不会重复抢锁）。
+    """
+    async with _runtime.lock_for(thread_id):
+        async with httpx.AsyncClient(timeout=60) as client:
+            try:
+                text = await transcribe_voice(audio_bytes, mimetype)
+            except VoiceTranscribeError as e:
+                logger.exception("语音转写失败（thread_id=%s）", thread_id)
+                await _runtime.runs_store.amark_error(run_id, f"语音转写失败: {e}")
+                with contextlib.suppress(Exception):
+                    await send_text(client, phone, VOICE_TRANSCRIBE_FAILED_MESSAGE)
+                return
 
-        ack = await _quick_intent_ack(text)
-        if ack:
-            with contextlib.suppress(Exception):
-                await send_text(client, phone, ack)
+            if not text.strip():
+                await _runtime.runs_store.amark_error(run_id, "语音转写结果为空")
+                with contextlib.suppress(Exception):
+                    await send_text(client, phone, VOICE_EMPTY_MESSAGE)
+                return
 
-    await process_message(phone, thread_id, run_id, text)
+            ack = await _quick_intent_ack(text)
+            if ack:
+                with contextlib.suppress(Exception):
+                    await send_text(client, phone, ack)
+
+        await _process_message_locked(phone, thread_id, run_id, text)

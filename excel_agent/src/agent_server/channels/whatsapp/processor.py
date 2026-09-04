@@ -60,8 +60,20 @@ async def process_message(phone: str, thread_id: str, run_id: str, body: str) ->
 
     channels/whatsapp/routes.py 收到消息后立刻 ack，这个函数才是实际耗时的部分——不再
     阻塞 HTTP 响应，结果和过程中的进度提示都通过 send_text/send_file 主动推送。
+
+    这里在函数最开始就去抢 `lock_for(thread_id)`：同一个 thread 的多条消息必须严格按
+    "谁先开始排队"来定处理顺序，而不是"谁先跑完前置步骤"。channels/whatsapp/voice.py
+    的 process_voice_message 也依赖这一点——它在转写语音之前就抢同一把锁，再调
+    _process_message_locked（不重复抢锁），这样语音消息不会因为转写耗时而被后发的
+    文字消息"抢跑"、导致回复顺序和用户发送顺序不一致。
     """
-    async with _runtime.lock_for(thread_id), httpx.AsyncClient(timeout=60) as client:
+    async with _runtime.lock_for(thread_id):
+        await _process_message_locked(phone, thread_id, run_id, body)
+
+
+async def _process_message_locked(phone: str, thread_id: str, run_id: str, body: str) -> None:
+    """process_message 的实际处理逻辑，假定调用者已经持有 lock_for(thread_id)。"""
+    async with httpx.AsyncClient(timeout=60) as client:
         context = ContextSchema(caller="whatsapp", user_id=thread_id, run_id=run_id)
         notice_task = asyncio.create_task(_notify_if_slow(client, phone))
 
