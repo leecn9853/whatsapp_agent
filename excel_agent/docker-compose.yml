@@ -18,6 +18,9 @@ services:
   # 长驻容器，DockerSandbox 通过 exec 调用它。
   sandbox:
     build: ./sandbox
+    mem_limit: "4g"
+    cpus: "4.0"
+    pids_limit: 512
     volumes:
       - ./src/agent/skills:/workspace/skills:ro
       - ./output:/workspace/output
