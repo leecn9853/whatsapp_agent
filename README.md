@@ -12,7 +12,6 @@
 | [`excel_agent/`](excel_agent/) | 核心 Agent 服务（:8200） |
 | [`whatsapp_simulator/`](whatsapp_simulator/) | WhatsApp 接入网关（:3000） |
 | [`third_app/`](third_app/) | 报表技能 mock 数据源（:8800） |
-| [`content_agent/`](content_agent/) | 实验原型，**不参与主链路** |
 
 完整架构见 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)。
 

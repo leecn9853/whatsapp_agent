@@ -20,8 +20,7 @@ whatsapp_agent/                 # monorepo 根目录
 ├── Makefile                    # make infra / agent / health / dev
 ├── excel_agent/                # ★ 核心生产服务：Excel/报表 Agent
 ├── whatsapp_simulator/         # ★ WhatsApp 接入网关
-├── third_app/                  # ★ 报表技能 mock 数据源
-└── content_agent/              # 实验性内容 Agent（非生产，见下文）
+└── third_app/                  # ★ 报表技能 mock 数据源
 ```
 
 | 目录 | 角色 | 是否生产必需 |
@@ -29,7 +28,6 @@ whatsapp_agent/                 # monorepo 根目录
 | `excel_agent` | 核心 Agent：模型推理、工具/技能、会话持久化、多渠道 HTTP | **是** |
 | `whatsapp_simulator` | WhatsApp 扫码登录、白名单、Webhook 桥接 | **是**（走 WhatsApp 渠道时） |
 | `third_app` | 成本/支付宝报表技能的 HTTP 假数据 | **是**（跑报表技能时） |
-| `content_agent` | 早期文字内容 Agent 原型（情商沟通 skill） | **否** |
 
 ---
 
@@ -52,7 +50,6 @@ whatsapp_agent/                 # monorepo 根目录
 | 鉴权 | **未做** webhook / simulator API / third_app 鉴权（需求确定后再加） |
 | 白名单 | demo 可留空（不限制号码）；上线前必须配置 `MESSAGE_WHITELIST` |
 | third_app | 开发用 mock；上线报表技能时换真实业务 API |
-| content_agent | 实验目录，忽略 |
 
 生产加固（鉴权、防火墙、密钥轮换、systemd 编排等）**不在当前范围**，待产品需求明确后迭代。
 
@@ -293,25 +290,6 @@ uv run python main.py   # 0.0.0.0:8800
 
 ---
 
-### 4. content_agent（实验性，非生产）
-
-**目录**：`content_agent/`
-
-**状态**：**不参与主链路**，无其他服务依赖它，可忽略除非在做内容类 Agent 实验。
-
-这是 `excel_agent` 之前的**轻量原型**：同样基于 deepagents + DeepSeek，但架构更简单——单文件 Starlette webhook、SQLite 持久化、无 Docker 沙箱、无 Excel/报表能力。内置 `eq-communication` skill（情商与人际沟通类文字内容生成）。
-
-| 对比项 | excel_agent（生产） | content_agent（实验） |
-|--------|---------------------|----------------------|
-| 端口 | `8200` | `8100` |
-| 持久化 | Postgres | SQLite |
-| 主要能力 | Excel 分析、报表技能 | 文字内容生成 |
-| WhatsApp 对接 | 完整多渠道架构 | 独立 `src/webhook.py` |
-
-若要将 simulator 临时指向它，需把 `WEBHOOK_URL` 改为 `http://localhost:8100/webhook`，且**不要与 excel_agent 同时占用同一机器人会话**。`README.md` 尚未编写，启动方式：`cd content_agent && make dev`。
-
----
-
 ## 典型消息处理链路
 
 1. 白名单用户在 WhatsApp 向机器人号发送文字或 Excel 文件
@@ -356,7 +334,6 @@ make health                                                          # 或根目
 | excel_agent | `8200` | `DATABASE_URL`, `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `WHATSAPP_SIMULATOR_URL` |
 | whatsapp_simulator | `3000` | `WEBHOOK_URL`, `MESSAGE_WHITELIST` |
 | third_app | `8800` | 无（开发 mock，无鉴权） |
-| content_agent | `8100` | `DEEPSEEK_API_KEY`（实验，非生产） |
 | Postgres | `5432` | `POSTGRES_PASSWORD` |
 | Docker sandbox | — | 容器名 `excel_agent-sandbox-1`，无对外端口 |
 
@@ -412,6 +389,5 @@ make health                                                          # 或根目
 - **excel_agent** 是系统核心：模型推理、工具调用、会话持久化、消息处理均在此。
 - **whatsapp_simulator** 是 WhatsApp 接入层：扫码登录、白名单、Webhook 桥接。
 - **third_app** 是报表技能的模拟数据源，仅被沙箱内 skill 脚本 HTTP 调用。
-- **content_agent** 是早期实验原型，**不在生产链路中**，可忽略。
 
 主链路：**内部白名单用户 ↔ simulator ↔ excel_agent ↔（工具/sandbox）↔ third_app**。Postgres 与 Docker 沙箱为运行时基础设施。

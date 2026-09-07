@@ -3,7 +3,6 @@ news_agent/
 examples/
 excel_agent_backup/
 overview_frontend/
-content_agent/
 
 # OS
 .DS_Store
