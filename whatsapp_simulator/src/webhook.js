@@ -14,7 +14,7 @@ async function dispatch(event, data) {
   }
 
   if (config.webhookExcludeEvents.includes(event)) {
-    console.debug(`[webhook] "${event}" is excluded via WEBHOOK_EXCLUDE_EVENTS, skipping dispatch`);
+    console.debug(`[webhook] "${event}" 已通过 WEBHOOK_EXCLUDE_EVENTS 排除，跳过分发。`);
     return;
   }
 
